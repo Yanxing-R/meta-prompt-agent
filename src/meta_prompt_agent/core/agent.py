@@ -1,24 +1,15 @@
+import logging
 import requests
 import json
-import sys
 import os
-
-try:
-    from meta_prompt_agent.prompts.templates import (
-        CORE_META_PROMPT_TEMPLATE,
-        EVALUATION_META_PROMPT_TEMPLATE,
-        REFINEMENT_META_PROMPT_TEMPLATE,
-        STRUCTURED_PROMPT_TEMPLATES
-    )
-except ImportError:
-    print("[错误] 无法导入 templates.py。请确保该文件在 meta_prompt_agent/prompts/ 目录下。")
-    raise ImportError("templates.py not found.")
-
 from meta_prompt_agent.config import settings
+from meta_prompt_agent.prompts.templates import (
+    CORE_META_PROMPT_TEMPLATE,
+    EVALUATION_META_PROMPT_TEMPLATE,
+    REFINEMENT_META_PROMPT_TEMPLATE,
+    STRUCTURED_PROMPT_TEMPLATES
+)
 
-import logging
-
-# 获取一个logger实例 (它会继承全局配置)
 logger = logging.getLogger(__name__)
 
 def load_and_format_structured_prompt(template_name: str, user_request: str, variables: dict | None) -> str | None:
@@ -151,9 +142,7 @@ def generate_and_refine_prompt(
             "error_details": None
         }
 
-        logger.info(f"开始处理任务类型 '{task_type}' 的请求: '{user_raw_request[:50]}...'") # 记录请求摘要
-        logger.info(f"任务类型: {task_type}")
-        logger.info("[代理信息] 开始生成初始优化提示...")
+        logger.info(f"开始处理任务类型 '{task_type}' 的请求: '{user_raw_request[:50]}...'")
 
         initial_core_prompt_for_llm = ""
 
@@ -222,8 +211,8 @@ def generate_and_refine_prompt(
             return results
     
         results["p1_initial_optimized_prompt"] = p1
-        conversation_history.append({"role": "user", "content": initial_core_prompt_for_llm})
-        conversation_history.append({"role": "assistant", "content": p1})
+        conversation_history.append({"role": "user", "content": str(initial_core_prompt_for_llm)})
+        conversation_history.append({"role": "assistant", "content": str(p1)})
     
         current_best_prompt = p1
         logger.info("\n---------- 初步优化后的提示词 (P1) ----------")
@@ -234,70 +223,85 @@ def generate_and_refine_prompt(
             results["final_prompt"] = current_best_prompt
             return results
 
-        # 在自我校正循环中
-        if enable_self_correction:
+        for i in range(max_recursion_depth):
+            logger.info(f"开始第 {i+1} 轮自我校正 (任务类型: {task_type})...")
+            
+            # 使用新的 EVALUATION_META_PROMPT_TEMPLATE
+            eval_prompt_content = EVALUATION_META_PROMPT_TEMPLATE.format(
+                user_raw_request=user_raw_request, 
+                prompt_to_evaluate=current_best_prompt
+            )
+            logger.debug(f"发送给Ollama进行评估的提示内容 (E{i+1}):\n{eval_prompt_content}")
+            
+            evaluation_report_str, error = call_ollama_api(eval_prompt_content, []) # 评估通常不需要历史
+            if error:
+                logger.warning(f"第 {i+1} 轮自我校正：生成评估报告失败。API返回: {evaluation_report_str}, 错误详情: {error}")
+                break # 评估失败，中断自我校正，使用当前最好的提示
+            
+            logger.info(f"从Ollama获取的原始评估报告字符串 (E{i+1}):\n{evaluation_report_str}")
 
-            for i in range(max_recursion_depth):
-                logger.info(f"[代理信息] 开始第 {i+1} 轮自我校正 (任务类型: {task_type})...")
-                eval_prompt_content = EVALUATION_META_PROMPT_TEMPLATE.format(
-                    user_raw_request=user_raw_request, 
-                    prompt_to_evaluate=current_best_prompt
+            # --- 新增：尝试解析JSON评估报告 ---
+            parsed_evaluation_report = None
+            try:
+                # 尝试去除可能的Markdown代码块标记 (```json ... ```)
+                # 有些LLM可能会在JSON前后加上这个
+                cleaned_report_str = evaluation_report_str.strip()
+                if cleaned_report_str.startswith("```json"):
+                    cleaned_report_str = cleaned_report_str[7:] # 去除 ```json
+                if cleaned_report_str.endswith("```"):
+                    cleaned_report_str = cleaned_report_str[:-3] # 去除 ```
+                cleaned_report_str = cleaned_report_str.strip() # 再次去除可能的空白
+
+                parsed_evaluation_report = json.loads(cleaned_report_str)
+                results["evaluation_reports"].append(parsed_evaluation_report) # 存储解析后的字典
+                logger.info(f"成功解析评估报告 (E{i+1}) 为JSON对象。")
+                logger.debug(f"解析后的评估报告 (E{i+1}) 内容: {json.dumps(parsed_evaluation_report, indent=2, ensure_ascii=False)}")
+            except json.JSONDecodeError as json_e:
+                logger.warning(
+                    f"无法将评估报告 (E{i+1}) 解析为JSON。错误: {json_e}. "
+                    f"将使用原始字符串作为评估报告。原始报告: \n{evaluation_report_str}"
                 )
-                evaluation_report, error = call_ollama_api(eval_prompt_content, [])
-                if error:
-                    logger.warning(f"第 {i+1} 轮自我校正：生成评估报告失败。API返回: {evaluation_report}, 错误详情: {error}")
-                    # 决定是跳出循环还是将此作为最终错误返回
-                    # results["error_message"] = f"评估阶段失败: {evaluation_report}" # 可以选择性地设置
-                    # results["error_details"] = error
-                    break # 跳出循环，使用当前最好的提示
-        
-                results["evaluation_reports"].append(evaluation_report)
-                conversation_history.append({"role": "user", "content": eval_prompt_content}) 
-                conversation_history.append({"role": "assistant", "content": evaluation_report})
-                logger.info("\n---------- 评估报告 (E) ----------")
-                logger.info(evaluation_report)
-                logger.info("----------------------------------")
+                results["evaluation_reports"].append(evaluation_report_str) # 存储原始字符串
+            # --- JSON解析结束 ---
+            
+            # 记录到对话历史时，确保内容是字符串
+            conversation_history.append({"role": "user", "content": str(eval_prompt_content)}) 
+            conversation_history.append({"role": "assistant", "content": str(evaluation_report_str)}) # 历史中存原始字符串
 
-                refinement_prompt_content = REFINEMENT_META_PROMPT_TEMPLATE.format(
-                    user_raw_request=user_raw_request,
-                    previous_prompt=current_best_prompt,
-                    evaluation_report=evaluation_report
-                )
-                refined_prompt, error = call_ollama_api(refinement_prompt_content, conversation_history)
-                if error:
-                    logger.warning(f"第 {i+1} 轮自我校正：生成精炼提示失败。API返回: {refined_prompt}, 错误详情: {error}")
-                    # 决定是跳出循环还是将此作为最终错误返回
-                    # results["error_message"] = f"精炼阶段失败: {refined_prompt}" # 可以选择性地设置
-                    # results["error_details"] = error
-                    break # 跳出循环，使用当前最好的提示
+            # 使用原始字符串（或未来可以用解析后的结构化信息）来格式化精炼提示
+            refinement_prompt_content = REFINEMENT_META_PROMPT_TEMPLATE.format(
+                user_raw_request=user_raw_request,
+                previous_prompt=current_best_prompt,
+                evaluation_report=evaluation_report_str # 精炼模板暂时还使用原始字符串
+            )
+            logger.debug(f"发送给Ollama进行精炼的提示内容 (P{i+2}):\n{refinement_prompt_content}")
 
-                results["refined_prompts"].append(refined_prompt)
-                conversation_history.append({"role": "user", "content": refinement_prompt_content})
-                conversation_history.append({"role": "assistant", "content": refined_prompt})
-
-                if refined_prompt.strip() == current_best_prompt.strip():
-                    logger.info("[代理信息] 精炼后的提示与上一版相同，停止递归。")
-                    break
-
-                current_best_prompt = refined_prompt
-                logger.info(f"\n---------- 第 {i+1} 轮精炼后的提示词 (P{i+2}) ----------")
-                logger.info(current_best_prompt)
-                logger.info("-------------------------------------------------")
-
+            refined_prompt, error = call_ollama_api(refinement_prompt_content, conversation_history)
+            if error:
+                logger.warning(f"第 {i+1} 轮自我校正：生成精炼提示失败。API返回: {refined_prompt}, 错误详情: {error}")
+                break # 精炼失败，中断自我校正
+            
+            logger.info(f"第 {i+1} 轮精炼后的提示词 (P{i+2}):\n{refined_prompt}")
+            results["refined_prompts"].append(refined_prompt)
+            
+            if refined_prompt.strip() == current_best_prompt.strip():
+                 logger.info("精炼后的提示与上一版相同，停止递归。")
+                 break
+            
+            current_best_prompt = refined_prompt
+            # 记录到对话历史
+            conversation_history.append({"role": "user", "content": str(refinement_prompt_content)})
+            conversation_history.append({"role": "assistant", "content": str(refined_prompt)})
+                 
         results["final_prompt"] = current_best_prompt
         logger.info(f"成功生成最终提示。请求: '{user_raw_request[:50]}...'")
         return results
 
-    except Exception as e: # <--- 添加顶层 except
-
+    except Exception as e: 
         logger.exception(f"在 generate_and_refine_prompt 处理过程中发生未捕获的严重错误。请求: '{user_raw_request[:50]}...'")
-        # 返回一个标准的错误结果给UI层
         return {
-            "initial_core_prompt": "",
-            "p1_initial_optimized_prompt": "",
-            "evaluation_reports": [],
-            "refined_prompts": [],
-            "final_prompt": "",
+            "initial_core_prompt": "", "p1_initial_optimized_prompt": "",
+            "evaluation_reports": [], "refined_prompts": [], "final_prompt": "",
             "error_message": "处理请求时发生内部错误，请稍后再试或联系管理员。",
             "error_details": {"type": "UnhandledException", "exception_type": e.__class__.__name__, "message": str(e)},
         }

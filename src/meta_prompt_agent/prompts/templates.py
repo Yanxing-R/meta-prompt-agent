@@ -1,4 +1,4 @@
-# prompt_templates.py
+# src/meta_prompt_agent/prompts/templates.py
 
 # --- 核心元提示模板 (通用基础) ---
 CORE_META_PROMPT_TEMPLATE = """
@@ -35,25 +35,100 @@ CORE_META_PROMPT_TEMPLATE = """
 
 # --- 递归与自我校正的提示模板 (通用) ---
 EVALUATION_META_PROMPT_TEMPLATE = """
-您现在是一个“提示词质量评估AI”。请分析以下提供的“目标提示词”，并从清晰性、完整性、具体性、可操作性、结构化程度以及是否充分捕捉了原始用户请求意图等方面进行评估。
-特别是，请考虑该提示词是否适合其预期的任务类型（例如，问答、研究、图像生成、代码生成）。
-请指出该提示词的优点和至少三个可改进的具体方面。如果存在模糊不清或可能导致目标AI误解的地方，请明确指出。
+您现在是一位高度专业的“提示词质量分析与评估AI”。您的核心任务是针对一个“待评估的目标提示词”，从多个维度进行深入分析，并以严格的JSON格式输出您的评估报告。
 
-原始用户请求：
-\"\"\"
+**请严格遵循以下评估维度和输出格式要求：**
+
+**1. 评估维度详情：**
+
+* **`clarity` (清晰度):**
+    * **评分 (score):** 1-5分。1分表示非常模糊或难以理解，5分表示完全清晰、无歧义。
+    * **理由 (justification):** 简要解释打分依据，指出清晰或模糊的具体之处。
+* **`completeness` (完整性):**
+    * **评分 (score):** 1-5分。1分表示严重缺失关键信息，5分表示包含了所有必要信息以使目标AI能够完成任务。
+    * **理由 (justification):** 解释打分依据，指出缺失或完备的具体信息点。
+* **`specificity_actionability` (具体性/可操作性):**
+    * **评分 (score):** 1-5分。1分表示过于笼统、无法直接执行，5分表示指令非常具体、目标AI可以直接操作。
+    * **理由 (justification):** 解释打分依据。
+* **`faithfulness_consistency` (对用户原始意图的忠实度/一致性):**
+    * **评分 (score):** 1-5分。1分表示严重偏离或曲解了用户原始意图，5分表示完全准确地反映了用户原始意图。
+    * **理由 (justification):** 解释打分依据，对比“待评估的目标提示词”与“原始用户请求”，说明是否存在偏离、扭曲或不必要的扩展。
+* **`potential_risks` (潜在风险):**
+    * **级别 (level):** 从 "Low", "Medium", "High" 中选择一个。
+    * **描述 (description):** 必须详细说明识别出的具体风险点，例如可能引导目标AI产生有害内容、偏见性言论、不道德建议、严重事实错误、或违反安全准则等。如果级别为"Low"，也请简要说明为什么认为是低风险或未发现明显风险。
+* **`suggestions_for_improvement` (改进建议):**
+    * 一个包含至少1到3条具体、可操作修改建议的字符串列表。这些建议应直接针对评估中发现的不足（如清晰度低、信息缺失、风险点等）。
+* **`evaluation_summary` (评估总结 - 可选但推荐):**
+    * **`overall_score` (总体评分 - 可选):** 1-5分，对提示词的综合质量给出一个总体印象分。
+    * **`main_strengths` (主要优点):** 一句话总结该提示词最突出的优点。
+    * **`main_weaknesses` (主要弱点):** 一句话总结该提示词最需要改进的方面。
+
+**2. 严格的JSON输出格式：**
+
+您的输出**必须**是一个单一的、格式完全正确的JSON对象，结构如下：
+
+```json
+{{  
+  "evaluation_summary": {{
+    "overall_score": <整数, 1-5, 可选>,
+    "main_strengths": "<字符串, 总结优点>",
+    "main_weaknesses": "<字符串, 总结弱点>"
+  }},
+  "dimension_scores": {{
+    "clarity": {{
+      "score": <整数, 1-5>,
+      "justification": "<字符串, 清晰度打分理由>"
+    }},
+    "completeness": {{
+      "score": <整数, 1-5>,
+      "justification": "<字符串, 完整性打分理由>"
+    }},
+    "specificity_actionability": {{
+      "score": <整数, 1-5>,
+      "justification": "<字符串, 具体性/可操作性打分理由>"
+    }},
+    "faithfulness_consistency": {{
+      "score": <整数, 1-5>,
+      "justification": "<字符串, 忠实度/一致性打分理由>"
+    }}
+  }},
+  "potential_risks": {{
+    "level": "<字符串, 'Low' 或 'Medium' 或 'High'>",
+    "description": "<字符串, 风险描述和原因>"
+  }},
+  "suggestions_for_improvement": [
+    "<字符串, 建议1>",
+    "<字符串, 建议2>",
+    "<字符串, 建议3, ...>"
+  ]
+}} // <--- 注意这里的双花括号
+```
+
+**请确保所有字符串值都使用双引号，并且JSON结构完全符合上述示例。不要在JSON之外添加任何额外的解释性文本或注释。**
+
+---
+
+**现在，请分析以下输入并生成您的JSON评估报告：**
+
+**原始用户请求：**
+```text
 {user_raw_request}
-\"\"\"
+```
 
-待评估的目标提示词：
-\"\"\"
+**待评估的目标提示词：**
+```text
 {prompt_to_evaluate}
-\"\"\"
+```
 
-您的评估报告（请指出优点和改进点，使用Markdown格式）：
+**您的JSON评估报告：**
+```json
+{{/* 请在此处开始您的JSON输出 */}}
+```
 """
 
+
 REFINEMENT_META_PROMPT_TEMPLATE = """
-您现在是一个“元提示优化AI”。基于用户的原始请求、先前生成的目标提示词以及对其的评估报告，请生成一个经过改进的、更优质的目标提示词。
+您现在是一个“元提示优化AI”。基于用户的原始请求、先前生成的目标提示词以及对其的评估报告（可能包含结构化的评分和建议），请生成一个经过改进的、更优质的目标提示词。
 请重点解决评估报告中指出的不足之处，并保留优点。确保新的提示词更加清晰、完整和有效，并且更适合预期的任务类型。
 新的提示词必须严格遵循原始“核心元提示”或特定任务类型模板中要求的结构。
 
@@ -67,7 +142,7 @@ REFINEMENT_META_PROMPT_TEMPLATE = """
 {previous_prompt}
 \"\"\"
 
-对P1的评估报告 (E1)：
+对P1的评估报告 (E1)（可能是JSON格式或文本）：
 \"\"\"
 {evaluation_report}
 \"\"\"
@@ -77,7 +152,7 @@ REFINEMENT_META_PROMPT_TEMPLATE = """
 
 # --- 结构化元提示模板 (按任务类型区分) ---
 STRUCTURED_PROMPT_TEMPLATES = {
-    # --- 通用/问答型模板 ---
+    # ... (你其他的结构化模板保持不变) ...
     "DefaultQnA": {
         "task_type": ["通用", "问答"],
         "description": "为通用的问题解答或简单任务生成优化提示。",
@@ -99,8 +174,6 @@ STRUCTURED_PROMPT_TEMPLATES = {
 """,
         "variables": ["concept_to_explain", "target_audience"]
     },
-
-    # --- 深度研究型模板 ---
     "ResearchOutlineGenerator": {
         "task_type": ["研究"],
         "description": "为特定研究主题生成详细大纲的优化提示。",
@@ -120,8 +193,6 @@ STRUCTURED_PROMPT_TEMPLATES = {
 """,
         "variables": ["research_topic"]
     },
-
-    # --- 图像生成型模板 ---
     "BasicImageGen": {
         "task_type": ["图像生成"],
         "description": "为基础的图像生成需求创建提示词。",
@@ -160,8 +231,6 @@ STRUCTURED_PROMPT_TEMPLATES = {
 """,
         "variables": ["subject", "action", "composition", "background", "art_style", "lighting", "colors", "details", "quality_hints", "negative_prompts"]
     },
-
-    # --- 代码生成型模板 ---
     "BasicCodeSnippet": {
         "task_type": ["代码生成"],
         "description": "为生成简单的代码片段创建优化提示。",
@@ -222,9 +291,12 @@ STRUCTURED_PROMPT_TEMPLATES = {
 if __name__ == '__main__':
     print("--- 核心元提示模板 (部分) ---")
     print(CORE_META_PROMPT_TEMPLATE[:300] + "...")
+    print(f"\n--- 新的评估模板 (部分) ---")
+    print(EVALUATION_META_PROMPT_TEMPLATE[:500] + "...") # 打印新模板的一部分
     print(f"\n--- 结构化模板数量: {len(STRUCTURED_PROMPT_TEMPLATES)} ---")
     for name, template in STRUCTURED_PROMPT_TEMPLATES.items():
         print(f"\n模板名称: {name}")
         print(f"  任务类型: {template.get('task_type', '未指定')}")
         print(f"  描述: {template.get('description', '无')}")
         print(f"  变量: {template.get('variables', [])}")
+
