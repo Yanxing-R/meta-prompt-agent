@@ -20,3 +20,15 @@ build-backend = "pdm.backend"
 
 [tool.pdm]
 distribution = true
+
+[tool.pdm.build]
+includes = ["src/meta_prompt_agent"] # 或者只是 "src/" 然后pdm能自动发现包
+# 或者
+[tool.pdm.options]
+source_includes = ["src/"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+    "pytest-cov>=6.1.1",
+]

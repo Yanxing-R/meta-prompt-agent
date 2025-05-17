@@ -75,11 +75,11 @@
 1.  **启动 Streamlit 应用：**
     在项目根目录下，通过PDM运行 `app.py`：
     ```bash
-    pdm run streamlit run app.py
+    pdm run streamlit run src/meta_prompt_agent/app/main_ui.py
     ```
     或者，如果您已经激活了PDM的虚拟环境：
     ```bash
-    streamlit run app.py
+    streamlit run src/meta_prompt_agent/app/main_ui.py
     ```
 
 2.  **打开浏览器：**
