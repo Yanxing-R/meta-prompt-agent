@@ -4,7 +4,7 @@
 
 ## 1. 顶层目录结构
 
-
+```text
 meta-prompt-agent/
 ├── .git/                     # Git 版本控制元数据
 ├── .venv/                    # PDM 管理的 Python 虚拟环境 (被 .gitignore 忽略)
@@ -20,7 +20,7 @@ meta-prompt-agent/
 ├── README.md                 # 项目入口文档，包含简介、安装、使用等
 ├── pdm.lock                  # PDM 锁定的精确依赖版本
 └── pyproject.toml            # 项目元数据及 PDM 依赖配置文件 (PEP 518, PEP 621)
-
+```
 
 ## 2. 源代码 (`src/meta_prompt_agent/`)
 
