@@ -10,10 +10,39 @@ meta-prompt-agent/
 ├── .venv/                    # PDM 管理的 Python 虚拟环境 (被 .gitignore 忽略)
 ├── docs/                     # 项目文档 (例如本架构文档)
 │   └── architecture.md
-├── src/                      # 主要的 Python 源代码
-│   └── meta_prompt_agent/    # 项目的核心 Python 包
-├── tests/                    # 自动化测试代码
-│   ├── unit/                 # 单元测试
+├── frontend/                 
+│   ├── node_modules/         # React项目的依赖
+│   ├── public/
+│   ├── src/                  # React项目的源代码
+│   ├── index.html
+│   ├── package.json
+│   ├── vite.config.js
+│   └── ... (其他React项目文件)
+├── src/
+│   └── meta_prompt_agent/
+│       ├── __init__.py
+│       ├── api/
+│       │   ├── __init__.py
+│       │   └── main.py       <-- 我们将在这里编写FastAPI代码
+│       ├── app/
+│       │   └── main_ui.py
+│       ├── config/
+│       │   ├── __init__.py
+│       │   ├── logging_config.py
+│       │   └── settings.py
+│       ├── core/
+│       │   ├── __init__.py
+│       │   └── agent.py
+│       └── prompts/
+│           ├── __init__.py
+│           └── templates.py
+├── tests/
+│   ├── __init__.py
+│   ├── api/                  
+│   │   ├── __init__.py       
+│   │   └── test_main_api.py  
+│   │── unit/
+│   │   └── test_agent.py
 │   └── integration/          # (预留) 集成测试
 ├── .gitignore                # Git 忽略规则
 ├── LICENSE                   # 项目开源许可证

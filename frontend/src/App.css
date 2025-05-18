@@ -1,0 +1,286 @@
+/* frontend/src/App.css */
+
+/* 移除或注释掉这里针对 html, body, #root 的样式，因为它们已移至 index.css */
+/* html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center; 
+  background-color: #f0f2f5; 
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
+    Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif; 
+  overflow-x: hidden; 
+} 
+*/
+
+.page-title-fixed {
+  position: fixed; 
+  top: 0;
+  left: 0;
+  padding: 0 1.5rem; 
+  z-index: 1000; 
+  background-color: rgba(255, 255, 255, 0.9); 
+  backdrop-filter: blur(8px); 
+  width: 100%; 
+  box-sizing: border-box; 
+  border-bottom: 1px solid #e0e6ed; 
+  display: flex; 
+  align-items: center; 
+  height: 56px; /* 之前是60px，可以根据Logo和文字实际高度微调 */
+}
+
+.page-title-logo {
+  height: 30px; /* 根据您的Logo调整高度 */
+  width: auto;   
+  margin-right: 0.6rem; /* Logo和文字之间的间距 */
+}
+
+.page-title-text {
+  font-size: 1.2rem; /* 调整字号 */
+  font-weight: 600; 
+  color: #343a40; 
+}
+
+.app-container {
+  max-width: 760px; 
+  width: 100%;     
+  padding: 0 1rem; /* 左右内边距 */
+  box-sizing: border-box;
+  /* 关键调整: margin-top 应该等于或略大于 .page-title-fixed 的高度 */
+  margin-top: calc(56px + 1rem);  /* 标题栏高度 (56px) + 期望的额外间距 (1rem) */
+  margin-bottom: 2rem; 
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem; 
+}
+
+@media (min-width: 800px) { /* 这个断点可以比 max-width 稍大一些 */
+  .app-container {
+    width: 760px; /* 在大屏幕上使用固定宽度 */
+    /* padding-left: 0; 
+    padding-right: 0; */ /* 如果希望内容区贴近760px的边，可以取消注释 */
+  }
+}
+
+/* ... 其他 .intro-section, .input-area-container 等样式保持不变 ... */
+.intro-section {
+  padding: 1.25rem 1.5rem; 
+  background-color: #ffffff; 
+  border-radius: 10px; 
+  border: 1px solid #e0e6ed;
+  color: #495057;
+  flex-shrink: 0; 
+  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+}
+.intro-section h2 { margin-top: 0; color: #2c3e50; font-size: 1.4rem; margin-bottom: 0.8rem; }
+.intro-section p { line-height: 1.65; margin-bottom: 0.7rem; font-size: 0.95rem; }
+.intro-section ul { padding-left: 1.25rem; margin-bottom: 0.7rem; font-size: 0.95rem;}
+.intro-section strong { color: #343a40; }
+
+.input-area-container {
+  position: relative; 
+  display: flex;    
+  flex-direction: column; 
+  background-color: #ffffff; 
+  padding: 0.75rem; 
+  border-radius: 12px; 
+  border: 1px solid #d1d9e6; 
+  width: 100%; 
+  box-sizing: border-box; 
+  min-height: 130px; 
+  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+  transition: box-shadow 0.2s ease-in-out, border-color 0.2s ease-in-out;
+}
+.input-area-container:focus-within { 
+  border-color: #86b7fe; 
+  box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.15);
+}
+
+.task-buttons-sidebar {
+  display: flex;       
+  flex-direction: row;
+  gap: 0.6rem;         
+  padding-bottom: 0.75rem; 
+  flex-shrink: 0; 
+  flex-wrap: wrap; 
+  border-bottom: 1px solid #e9ecef; 
+  margin-bottom: 0.75rem; 
+}
+
+.task-type-button {
+  padding: 0.4rem 0.9rem; 
+  font-size: 0.8rem; 
+  color: #495057; 
+  background-color: #f8f9fa; 
+  border: 1px solid #dee2e6;
+  border-radius: 20px; 
+  cursor: pointer;
+  transition: background-color 0.2s, color 0.2s, border-color 0.2s, box-shadow 0.2s;
+  outline: none;
+  text-align: center;
+  display: flex; 
+  align-items: center;
+  gap: 0.4rem; 
+}
+.task-type-button:hover {
+  background-color: #e2e6ea;
+  border-color: #adb5bd;
+}
+.task-type-button.active {
+  background-color: #495057; 
+  color: white; 
+  border-color: #495057; 
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+.task-type-button.active svg { 
+  stroke: white;
+}
+.task-type-button svg { 
+ stroke: #495057; 
+ transition: stroke 0.2s;
+}
+.task-type-button:hover svg {
+  stroke: #343a40;
+}
+
+.main-input-and-send-wrapper {
+  flex-grow: 1; 
+  display: flex; 
+  align-items: stretch; 
+  position: relative; 
+  width: 100%;
+}
+
+.main-input-and-send-wrapper textarea { 
+  flex-grow: 1; 
+  padding: 0.8rem 4rem 0.8rem 0.8rem; 
+  border: none; 
+  border-radius: 8px; 
+  font-size: 1rem;
+  box-sizing: border-box; 
+  resize: none; 
+  min-height: 52px; 
+  max-height: 180px; 
+  overflow-y: auto; 
+  background-color: transparent; 
+  outline: none; 
+  line-height: 1.6;
+  color: #212529; 
+}
+
+.send-button {
+  position: absolute; 
+  bottom: 0.6rem;    
+  right: 0.6rem;     
+  background-color: #6c757d; 
+  color: white; 
+  border: none;
+  border-radius: 50%; 
+  width: 40px;       
+  height: 40px;      
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  cursor: pointer;
+  transition: background-color 0.2s, transform 0.1s, opacity 0.2s;
+  padding: 0; 
+  z-index: 2; 
+  opacity: 0.7; 
+}
+.send-button:not(:disabled):hover {
+  opacity: 1;
+  background-color: #5a6268; 
+}
+.send-button.loading { 
+  opacity: 1; 
+}
+.send-button.loading:hover {
+  background-color: #5a6268; 
+}
+.send-button:disabled { 
+  background-color: #e9ecef; 
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.send-button:active:not(:disabled) { 
+  transform: scale(0.92); 
+}
+.send-button .send-icon,
+.send-button .stop-icon { 
+  width: 18px; 
+  height: 18px;
+  fill: white; 
+  stroke: white; 
+}
+.send-button .loader { /* (loader样式保持不变) */ }
+
+
+.error-message { 
+  color: #c0392b; 
+  background-color: #fdecea;
+  border: 1px solid #f5c6cb;
+  padding: 0.8rem 1rem;
+  border-radius: 8px; 
+  opacity: 0; 
+  animation: fadeIn 0.5s forwards; 
+  flex-shrink: 0; 
+}
+
+.result-section {
+  padding: 1.5rem; 
+  background-color: #ffffff; 
+  border: 1px solid #e0e6ed; 
+  border-radius: 12px; 
+  overflow: hidden; 
+  min-height: 200px; 
+  max-height: 400px; 
+  display: flex; 
+  flex-direction: column;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+  opacity: 0; 
+  transform: translateY(10px); 
+  transition: opacity 0.4s ease-out, transform 0.4s ease-out, border-color 0.3s; 
+}
+.result-section.visible { 
+  opacity: 1;
+  transform: translateY(0);
+  border-style: solid; 
+  border-color: #d1d9e6; 
+}
+.result-section.empty-placeholder { 
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  color: #6c757d; 
+  font-style: italic;
+  border-style: dashed; 
+  opacity: 0.7; 
+  width: 100%; 
+  background-color: #f8f9fa; 
+  height: 100%; 
+}
+.result-section h2 {
+  margin-top: 0;
+  margin-bottom: 1rem; 
+  color: #343a40; 
+  font-size: 1.25rem;
+  flex-shrink: 0; 
+}
+.result-section pre {
+  white-space: pre-wrap; 
+  word-wrap: break-word; 
+  background-color: #f8f9fa; 
+  padding: 1rem;
+  border-radius: 8px; 
+  border: 1px solid #e9ecef; 
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace; 
+  color: #212529; 
+  line-height: 1.6; 
+  overflow: auto; 
+  flex-grow: 1; 
+}
+
+@keyframes fadeIn { /* (保持不变) */ }
+@keyframes spin { /* (保持不变) */ }

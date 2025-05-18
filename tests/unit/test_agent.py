@@ -12,14 +12,16 @@ from meta_prompt_agent.core.agent import (
     load_and_format_structured_prompt, 
     load_feedback, 
     save_feedback,
-    generate_and_refine_prompt 
+    generate_and_refine_prompt,
+    explain_term_in_prompt 
 )
 from meta_prompt_agent.config import settings 
 from meta_prompt_agent.prompts.templates import ( 
     CORE_META_PROMPT_TEMPLATE,
     STRUCTURED_PROMPT_TEMPLATES,
     EVALUATION_META_PROMPT_TEMPLATE, # 确保这是最新的JSON输出版本
-    REFINEMENT_META_PROMPT_TEMPLATE  
+    REFINEMENT_META_PROMPT_TEMPLATE,
+    EXPLAIN_TERM_TEMPLATE
 )
 
 
@@ -745,3 +747,105 @@ def test_generate_and_refine_prompt_task_type_image_gen_fallback(monkeypatch):
     assert results.get("p1_initial_optimized_prompt") == expected_p1_from_basic_image_gen
     assert results.get("final_prompt") == expected_p1_from_basic_image_gen
 
+def test_explain_term_in_prompt_success(monkeypatch):
+    """
+    测试 explain_term_in_prompt 成功生成解释。
+    """
+    # 1. 准备 (Arrange)
+    term_to_explain = "角色扮演"
+    context_prompt = "请使用角色扮演的方式，扮演一个海盗船长，然后告诉我一个宝藏的故事。"
+    expected_explanation = "角色扮演是指让AI模仿特定的身份或性格来进行回应..."
+
+    mock_api_calls = []
+    def mock_successful_ollama_call_for_explain(prompt_content_sent, messages_history=None):
+        mock_api_calls.append(prompt_content_sent)
+        # 验证发送给Ollama的提示是否正确使用了EXPLAIN_TERM_TEMPLATE
+        expected_explain_request = EXPLAIN_TERM_TEMPLATE.format(
+            term_to_explain=term_to_explain,
+            context_prompt=context_prompt
+        )
+        assert prompt_content_sent == expected_explain_request
+        return expected_explanation, None
+    
+    monkeypatch.setattr('meta_prompt_agent.core.agent.call_ollama_api', mock_successful_ollama_call_for_explain)
+
+    # 2. 执行 (Act)
+    explanation, error_details = explain_term_in_prompt(term_to_explain, context_prompt)
+
+    # 3. 断言 (Assert)
+    assert error_details is None, f"成功解释时不应返回错误详情，但得到: {error_details}"
+    assert explanation == expected_explanation.strip(), "返回的解释与预期不符"
+    assert len(mock_api_calls) == 1, "call_ollama_api 应只被调用1次"
+
+# 新增测试用例：测试 explain_term_in_prompt 输入验证 - term_to_explain 为空
+def test_explain_term_in_prompt_empty_term(monkeypatch):
+    """
+    测试当 term_to_explain 为空时，explain_term_in_prompt 是否返回错误。
+    """
+    term_to_explain = ""
+    context_prompt = "一些上下文。"
+    
+    # 我们不期望 call_ollama_api 在这种情况下被调用
+    mock_call_ollama_api_calls = []
+    def mock_ollama_should_not_be_called(*args, **kwargs):
+        mock_call_ollama_api_calls.append(True)
+        pytest.fail("call_ollama_api 不应在输入验证失败时被调用")
+        return "不应到达这里", None # 以防万一
+    monkeypatch.setattr('meta_prompt_agent.core.agent.call_ollama_api', mock_ollama_should_not_be_called)
+
+    explanation, error_details = explain_term_in_prompt(term_to_explain, context_prompt)
+
+    assert explanation.startswith("错误：需要提供要解释的术语。"), "错误消息不符合预期"
+    assert error_details is not None, "应返回错误详情"
+    assert error_details.get("type") == "InputValidationError", "错误类型不符"
+    assert "待解释术语不能为空" in error_details.get("details", ""), "错误详情不符"
+    assert len(mock_call_ollama_api_calls) == 0, "call_ollama_api 不应被调用"
+
+# 新增测试用例：测试 explain_term_in_prompt 输入验证 - context_prompt 为空
+def test_explain_term_in_prompt_empty_context(monkeypatch):
+    """
+    测试当 context_prompt 为空时，explain_term_in_prompt 是否返回错误。
+    """
+    term_to_explain = "某个术语"
+    context_prompt = "   " # 仅包含空白
+    
+    mock_call_ollama_api_calls = []
+    def mock_ollama_should_not_be_called(*args, **kwargs):
+        mock_call_ollama_api_calls.append(True)
+        pytest.fail("call_ollama_api 不应在输入验证失败时被调用")
+        return "不应到达这里", None
+    monkeypatch.setattr('meta_prompt_agent.core.agent.call_ollama_api', mock_ollama_should_not_be_called)
+
+    explanation, error_details = explain_term_in_prompt(term_to_explain, context_prompt)
+
+    assert explanation.startswith("错误：需要提供术语所在的上下文提示。"), "错误消息不符合预期"
+    assert error_details is not None, "应返回错误详情"
+    assert error_details.get("type") == "InputValidationError", "错误类型不符"
+    assert "上下文提示不能为空" in error_details.get("details", ""), "错误详情不符"
+    assert len(mock_call_ollama_api_calls) == 0, "call_ollama_api 不应被调用"
+
+# 新增测试用例：测试 explain_term_in_prompt 中 call_ollama_api 调用失败的情况
+def test_explain_term_in_prompt_api_call_fails(monkeypatch):
+    """
+    测试当内部调用 call_ollama_api 失败时，explain_term_in_prompt 是否正确传递错误。
+    """
+    term_to_explain = "复杂术语"
+    context_prompt = "包含这个复杂术语的提示。"
+    simulated_api_error_message = "错误：Ollama连接失败"
+    simulated_api_error_details = {"type": "ConnectionError", "details": "模拟连接失败"}
+
+    def mock_failing_ollama_call(prompt_content_sent, messages_history=None):
+        # 验证发送的提示是否是解释模板格式化后的
+        expected_explain_request = EXPLAIN_TERM_TEMPLATE.format(
+            term_to_explain=term_to_explain,
+            context_prompt=context_prompt
+        )
+        assert prompt_content_sent == expected_explain_request
+        return simulated_api_error_message, simulated_api_error_details
+    
+    monkeypatch.setattr('meta_prompt_agent.core.agent.call_ollama_api', mock_failing_ollama_call)
+
+    explanation, error_details = explain_term_in_prompt(term_to_explain, context_prompt)
+
+    assert explanation == simulated_api_error_message, "返回的错误消息与API模拟不符"
+    assert error_details == simulated_api_error_details, "返回的错误详情与API模拟不符"

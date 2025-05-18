@@ -68,7 +68,7 @@ EVALUATION_META_PROMPT_TEMPLATE = """
 您的输出**必须**是一个单一的、格式完全正确的JSON对象，结构如下：
 
 ```json
-{{  
+{{
   "evaluation_summary": {{
     "overall_score": <整数, 1-5, 可选>,
     "main_strengths": "<字符串, 总结优点>",
@@ -101,7 +101,7 @@ EVALUATION_META_PROMPT_TEMPLATE = """
     "<字符串, 建议2>",
     "<字符串, 建议3, ...>"
   ]
-}} // <--- 注意这里的双花括号
+}}
 ```
 
 **请确保所有字符串值都使用双引号，并且JSON结构完全符合上述示例。不要在JSON之外添加任何额外的解释性文本或注释。**
@@ -126,7 +126,6 @@ EVALUATION_META_PROMPT_TEMPLATE = """
 ```
 """
 
-
 REFINEMENT_META_PROMPT_TEMPLATE = """
 您现在是一个“元提示优化AI”。基于用户的原始请求、先前生成的目标提示词以及对其的评估报告（可能包含结构化的评分和建议），请生成一个经过改进的、更优质的目标提示词。
 请重点解决评估报告中指出的不足之处，并保留优点。确保新的提示词更加清晰、完整和有效，并且更适合预期的任务类型。
@@ -149,6 +148,39 @@ REFINEMENT_META_PROMPT_TEMPLATE = """
 
 请生成改进后的目标提示词 (P2)，严格按照结构输出：
 """
+
+# 新增的解释模板 (已修正花括号)
+EXPLAIN_TERM_TEMPLATE = """
+您是一位知识渊博且善于清晰表达的AI导师。您的任务是向一位正在学习如何优化AI提示词的用户解释一个特定的术语或短语。
+
+请专注于解释该术语在所提供的“上下文提示词”中的具体含义、作用以及为什么它可能被包含在优化后的提示中。您的解释应该：
+
+1.  **简洁明了：** 使用用户易于理解的语言，避免不必要的行话。
+2.  **聚焦上下文：** 解释应紧密围绕该术语在“上下文提示词”中的具体应用。
+3.  **阐明作用/目的：** 解释为什么使用这个术语/短语有助于提升提示词的质量或引导AI更好地完成任务。
+4.  **（可选）提供一个简单示例：** 如果适用，可以用一个非常简短的例子来说明该术语的用法或效果。
+5.  **友好且具有鼓励性：** 您的语气应该是帮助和引导用户学习。
+
+**请不要进行与术语解释无关的对话或提问。您的回答应该是直接的解释内容。**
+
+---
+
+**待解释的术语/短语：**
+`{term_to_explain}`
+
+**该术语/短语所在的上下文提示词：**
+```text
+{context_prompt}
+```
+
+---
+
+**您的解释：**
+```text
+{{/* 请在此处开始您的解释 */}}
+```
+"""
+
 
 # --- 结构化元提示模板 (按任务类型区分) ---
 STRUCTURED_PROMPT_TEMPLATES = {
@@ -288,11 +320,14 @@ STRUCTURED_PROMPT_TEMPLATES = {
     }
 }
 
+
 if __name__ == '__main__':
     print("--- 核心元提示模板 (部分) ---")
     print(CORE_META_PROMPT_TEMPLATE[:300] + "...")
     print(f"\n--- 新的评估模板 (部分) ---")
-    print(EVALUATION_META_PROMPT_TEMPLATE[:500] + "...") # 打印新模板的一部分
+    print(EVALUATION_META_PROMPT_TEMPLATE[:500] + "...") 
+    print(f"\n--- 新的解释模板 (部分) ---")
+    print(EXPLAIN_TERM_TEMPLATE[:500] + "...") # 打印新解释模板的一部分
     print(f"\n--- 结构化模板数量: {len(STRUCTURED_PROMPT_TEMPLATES)} ---")
     for name, template in STRUCTURED_PROMPT_TEMPLATES.items():
         print(f"\n模板名称: {name}")

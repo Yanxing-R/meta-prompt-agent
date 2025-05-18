@@ -7,7 +7,8 @@ from meta_prompt_agent.prompts.templates import (
     CORE_META_PROMPT_TEMPLATE,
     EVALUATION_META_PROMPT_TEMPLATE,
     REFINEMENT_META_PROMPT_TEMPLATE,
-    STRUCTURED_PROMPT_TEMPLATES
+    STRUCTURED_PROMPT_TEMPLATES,
+    EXPLAIN_TERM_TEMPLATE
 )
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,47 @@ def load_and_format_structured_prompt(template_name: str, user_request: str, var
         )
         return None
 
+def clean_llm_output(text: str) -> str:
+    """
+    清理LLM输出中可能包含的特定内部思考标记。
+    它会寻找成对的 <<think>> 和 <</think>> 标记，并返回最后一个闭合标记之后的内容。
+    如果找不到闭合标记，但找到了起始标记，会尝试返回起始标记前的内容或空字符串。
+    如果没有找到任何相关标记，则返回原始文本。
+    """
+    opening_marker = "<think>"
+    closing_marker = "</think>" # 假设这是对应的闭合标记
+
+    # 寻找最后一个闭合标记的位置
+    last_closing_marker_index = text.rfind(closing_marker)
+
+    if last_closing_marker_index != -1:
+        # 如果找到了闭合标记，提取它之后的内容
+        content_after_last_closing = text[last_closing_marker_index + len(closing_marker):].strip()
+        logger.debug(f"找到闭合思考标记 '{closing_marker}'，提取其后内容。")
+        return content_after_last_closing
+    else:
+        # 如果没有找到闭合标记，检查是否有起始标记
+        first_opening_marker_index = text.find(opening_marker)
+        if first_opening_marker_index != -1:
+            # 如果只有起始标记，说明思考过程可能未完成或输出不完整
+            # 我们可以选择返回起始标记前的内容，或者一个空字符串，或者原始文本并记录警告
+            logger.warning(
+                f"在LLM输出中找到起始思考标记 '{opening_marker}' 但未找到对应的闭合标记 '{closing_marker}'。"
+                "将返回原始文本，或考虑截断。"
+            )
+            # 方案1: 返回起始标记前的内容 (如果前面有内容)
+            # content_before_opening = text[:first_opening_marker_index].strip()
+            # if content_before_opening:
+            #     return content_before_opening
+            # else: # 如果前面没内容，或者我们不想要前面的内容
+            #     return "" # 或者返回原始文本，让用户看到问题
+            return text # MVP阶段，如果思考未闭合，返回原文让用户感知
+        else:
+            # 如果没有任何相关标记，返回原始文本
+            logger.debug("未在LLM输出中找到思考标记，返回原始文本。")
+            return text.strip()
+
+
 def call_ollama_api(prompt_content: str, messages_history: list = None) -> tuple[str, dict | None]:
     current_messages = []
     if messages_history:
@@ -86,39 +128,65 @@ def call_ollama_api(prompt_content: str, messages_history: list = None) -> tuple
         "stream": False
     }
     headers = {"Content-Type": "application/json"}
+    error_msg = "" 
 
     try:
-        response = requests.post(settings.OLLAMA_API_URL, headers=headers, data=json.dumps(payload), timeout=180)
+        logger.debug(f"向 Ollama API ({settings.OLLAMA_API_URL}) 发送请求。模型: {settings.OLLAMA_MODEL}")
+        response = requests.post(
+            settings.OLLAMA_API_URL,
+            headers=headers,
+            data=json.dumps(payload),
+            timeout=180
+        )
         response.raise_for_status()
         response_data = response.json()
+
         if "message" in response_data and "content" in response_data["message"]:
-            return response_data["message"]["content"].strip(), None
+            logger.info("成功从 Ollama API 获取响应。")
+            raw_content = response_data["message"]["content"] # 不在这里strip，让clean_llm_output处理
+            cleaned_content = clean_llm_output(raw_content) 
+            return cleaned_content, None
         else:
             error_msg = "Ollama API响应格式不符合预期"
+            logger.warning(f"{error_msg}。响应数据: {response_data}")
             return f"错误：{error_msg}", {"type": "FormatError", "details": response_data}
-    except requests.exceptions.ConnectionError as e:
+
+    except requests.exceptions.ConnectionError as e: 
         error_msg = f"无法连接到Ollama服务: {settings.OLLAMA_API_URL}"
-        logger.error(f"{error_msg}. 详细错误: {e}", exc_info=True) # exc_info=True 会记录堆栈跟踪
+        logger.error(f"{error_msg}. 详细错误: {e}", exc_info=True)
         return f"错误：{error_msg}", {"type": "ConnectionError", "url": settings.OLLAMA_API_URL, "details": str(e)}
-    except requests.exceptions.Timeout as e:
+
+    except requests.exceptions.Timeout as e: 
         error_msg = f"请求Ollama API超时 ({settings.OLLAMA_API_URL})"
         logger.error(f"{error_msg}. 详细错误: {e}", exc_info=True)
         return f"错误：{error_msg}", {"type": "TimeoutError", "url": settings.OLLAMA_API_URL, "details": str(e)}
-    except requests.exceptions.HTTPError as e:
+
+    except requests.exceptions.HTTPError as e: 
         error_text = f"Ollama API交互失败 (HTTP {e.response.status_code})"
-        logger.error(f"{error_text}. 详细错误: {e}", exc_info=True)
+        logger.error(f"{error_text}. URL: {e.request.url}. 响应内容: {e.response.text}", exc_info=True)
+        
         details = {"type": "HTTPError", "status_code": e.response.status_code, "raw_response": e.response.text}
-        try: 
+        try:
             error_details_json = e.response.json()
             if "error" in error_details_json:
-                error_text += f" Ollama错误: {error_details_json['error']}"
+                error_text += f". Ollama错误: {error_details_json['error']}"
                 details["ollama_error"] = error_details_json['error']
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError:
+            logger.warning("解析HTTPError的响应体为JSON时失败。")
             pass
         return f"错误：{error_text}", details
-    except Exception as e:
-        error_msg = f"调用Ollama API时发生未知内部错误"
-        logger.error(f"{error_msg}", exc_info=True)
+
+    except json.JSONDecodeError as e: 
+        error_msg = "解析Ollama API响应为JSON时失败"
+        raw_response_text = "未知 (可能在 response.json() 之前发生错误)"
+        if 'response' in locals() and hasattr(response, 'text'):
+            raw_response_text = response.text[:500] 
+        logger.error(f"{error_msg}. 详细错误: {e}. 部分原始响应: {raw_response_text}", exc_info=True)
+        return f"错误：{error_msg}", {"type": "JSONDecodeError", "details": str(e), "raw_response_snippet": raw_response_text}
+
+    except Exception as e: 
+        error_msg = "调用Ollama API时发生未知内部错误" 
+        logger.exception(f"调用Ollama API时发生未知错误。原始错误: {e}") 
         return f"错误：{error_msg}", {"type": "UnknownError", "exception_type": e.__class__.__name__, "details": "详情请查看应用日志"}
 
 
@@ -340,6 +408,54 @@ def save_feedback(all_feedback_data: list) -> bool:
     except Exception as e:
         logger.exception(f"保存反馈数据到 '{settings.FEEDBACK_FILE}' 时发生未知错误。")
         return False
+
+def explain_term_in_prompt(term_to_explain: str, context_prompt: str) -> tuple[str, dict | None]:
+    """
+    接收一个术语和其上下文提示，调用LLM来生成对该术语的解释。
+
+    Args:
+        term_to_explain (str): 需要解释的术语或短语。
+        context_prompt (str): 包含该术语的完整提示词上下文。
+
+    Returns:
+        tuple[str, dict | None]: 一个元组，第一个元素是LLM生成的解释文本（如果成功）
+                                 或错误消息（如果失败），第二个元素是错误详情字典（如果失败则为dict，否则为None）。
+    """
+    if not term_to_explain or not term_to_explain.strip():
+        logger.warning("explain_term_in_prompt: 'term_to_explain' 参数为空或仅包含空白。")
+        return "错误：需要提供要解释的术语。", {"type": "InputValidationError", "details": "待解释术语不能为空。"}
+    
+    if not context_prompt or not context_prompt.strip():
+        logger.warning("explain_term_in_prompt: 'context_prompt' 参数为空或仅包含空白。")
+        return "错误：需要提供术语所在的上下文提示。", {"type": "InputValidationError", "details": "上下文提示不能为空。"}
+
+    try:
+        explanation_request_prompt = EXPLAIN_TERM_TEMPLATE.format(
+            term_to_explain=term_to_explain,
+            context_prompt=context_prompt
+        )
+        logger.info(f"为术语 '{term_to_explain}' 生成解释请求...")
+        logger.debug(f"发送给Ollama进行解释的提示内容:\n{explanation_request_prompt}")
+
+        explanation_text, error_details = call_ollama_api(explanation_request_prompt)
+
+        if error_details:
+            logger.error(f"调用Ollama API解释术语 '{term_to_explain}' 时失败。API返回: {explanation_text}, 错误详情: {error_details}")
+            # error_text 已经是 "错误：..." 开头了
+            return explanation_text, error_details
+        
+        logger.info(f"成功获取术语 '{term_to_explain}' 的解释。")
+        return explanation_text.strip(), None # 成功时返回解释文本和None
+
+    except KeyError as e:
+        logger.exception(
+            f"格式化 EXPLAIN_TERM_TEMPLATE 时发生 KeyError (可能是模板占位符问题): {e}。"
+            f"请检查模板中的 {{term_to_explain}} 和 {{context_prompt}} 占位符。"
+        )
+        return "错误：解释模板格式化失败。", {"type": "TemplateFormatError", "details": str(e)}
+    except Exception as e:
+        logger.exception(f"解释术语 '{term_to_explain}' 时发生未知错误。")
+        return "错误：解释过程中发生未知内部错误。", {"type": "UnknownExplanationError", "details": str(e)}
 
 if __name__ == '__main__':
     print("Testing agent_logic.py with task types including Code Generation...")
