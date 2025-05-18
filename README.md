@@ -1,6 +1,6 @@
 # Think Twice 🤔💡
 
-**一个旨在提升您思考深度与提问效能的智能伙伴，助您开启更高质量的AI交互。采用FastAPI后端与React前端架构。**
+**一个旨在提升您思考深度与提问效能的智能伙伴，助您开启更高质量的AI交互。采用FastAPI后端（支持Ollama, Gemini, 通义千问）与React前端架构。**
 
 ---
 
@@ -19,12 +19,14 @@
 通过这一“先内观、再外求”的协同过程，`Think Twice` 致力于帮助您充分解锁AI的潜能，开启更高质量、更富洞察力的AI对话，最终获取远超预期的成果。无论您是AI领域的新手，还是经验丰富的探索者，我们都希望能为您提供有力的支持，让每一次与AI的互动都深思熟虑，事半功倍。
 
 ## ✨ MVP核心功能 (Current MVP Features)
-* **初步提示词优化 (P1 Generation)：** 根据用户输入的原始请求和选择的任务类型（通用、研究、图像、代码），生成一个初步优化后的提示词。
+
+* **初步提示词优化 (P1 Generation)：** 根据用户输入的原始请求和选择的任务类型，通过配置的LLM服务（Ollama, Google Gemini, 或通义千问）生成一个初步优化后的提示词。
 * **任务类型选择：** 用户可以在输入界面选择不同的任务类型，以获得更有针对性的优化。
 * **用户友好的Web界面：** 基于React构建的现代化、简洁的前端用户界面。
 * **可中止的请求：** 在AI处理请求时，用户可以点击停止按钮中止前端的等待。
 * **(后端) AI辅助解释功能的核心逻辑：** 已经实现了通过API解释提示词中特定术语的后端能力（前端集成待完成）。
 * **(后端) 结构化评估报告：** 评估LLM现在会输出结构化的JSON报告（前端利用待完成）。
+* **多LLM后端支持：** 目前已集成Ollama（本地）、Google Gemini API和通义千问API，可通过配置切换。
 
 ## 🎯 目标用户 (Target Audience)
 
@@ -42,105 +44,105 @@
     * Python
     * FastAPI (用于构建API服务)
     * Pydantic (用于数据验证)
-    * Ollama (用于本地运行和管理LLM模型，当前默认使用 `qwen3:4b`)
+    * LLM服务集成:
+        * Ollama (本地运行)
+        * Google Generative AI SDK (Gemini API)
+        * DashScope SDK (通义千问 API)
     * PDM (用于Python包和依赖管理)
 * **前端 (Frontend)：**
     * React (使用 TypeScript 和 Vite)
     * CSS (用于样式)
 * **版本控制：** Git & GitHub
-* **单元测试：** Pytest (后端), (前端测试待引入)
+* **单元测试：** Pytest (后端)
 
 ## 🚀 安装与运行 (Installation & Setup for MVP)
 
-**重要提示：** 本项目目前依赖于本地运行的Ollama服务。请确保您已按照Ollama官方文档正确安装并运行Ollama，并且已拉取所需的模型（默认为 `qwen3:4b`）。
+**重要提示：** 根据您选择的 `ACTIVE_LLM_PROVIDER`，您可能需要配置相应的API密钥或本地服务。
 
-### A. 后端 (FastAPI API服务)
+### A. 通用设置
 
 1.  **克隆本仓库 (如果您尚未克隆)：**
     ```bash
-    git clone [https://github.com/Yanxing-R/meta-prompt-agent.git](https://github.com/Yanxing-R/meta-prompt-agent.git) # 请替换为您的仓库地址
-    cd meta-prompt-agent
+    git clone [https://github.com/Yanxing-R/think-twice.git](https://github.com/Yanxing-R/think-twice.git) # 请确保这是您正确的仓库地址
+    cd think-twice
     ```
 
-2.  **确保PDM已安装并初始化项目：**
-    如果您是首次设置，请参照 [PDM官方文档](https://pdm-project.org/) 安装PDM。
+2.  **配置环境变量 (`.env` 文件)：**
+    在项目根目录下创建一个 `.env` 文件，并根据您希望使用的LLM服务添加相应的API密钥：
+    ```env
+    # .env 文件示例
+    # DASHSCOPE_API_KEY="sk-your_qwen_api_key_here" # 通义千问API密钥 (SDK优先使用此变量名)
+    # QWEN_API_KEY="sk-your_qwen_api_key_here"      # 也可作为备用
+    
+    # GEMINI_API_KEY="your_gemini_api_key_here"     # Google Gemini API密钥
+    
+    # ACTIVE_LLM_PROVIDER="qwen" # 设置激活的LLM服务: qwen, gemini, 或 ollama
+    # QWEN_MODEL_NAME="qwen-plus" # 或您选择的通义模型
+    # GEMINI_MODEL_NAME="gemini-1.5-flash-latest" # 或您选择的Gemini模型
+    # OLLAMA_MODEL="qwen3:4b" # 或您选择的Ollama本地模型
+    ```
+    **确保将 `.env` 文件添加到 `.gitignore` 中，不要提交您的API密钥！**
+
+### B. 后端 (FastAPI API服务)
+
+1.  **确保PDM已安装并初始化项目：**
+    参照 [PDM官方文档](https://pdm-project.org/) 安装PDM。
     在项目根目录下运行：
     ```bash
     pdm install
     ```
-    这将创建虚拟环境并安装所有Python依赖（包括开发依赖如FastAPI, Uvicorn）。
+    这将安装所有Python依赖，包括 `fastapi`, `uvicorn`, `google-generativeai`, `dashscope`, `python-dotenv` 等。
 
-3.  **运行Ollama服务：**
-    确保您的Ollama桌面应用正在运行，或者您已通过命令行启动了Ollama服务。
-    拉取默认模型（如果尚未拉取）：
-    ```bash
-    ollama pull qwen3:4b
-    ```
+2.  **如果您选择使用Ollama (`ACTIVE_LLM_PROVIDER="ollama"`)：**
+    * 确保您的Ollama桌面应用正在运行，或已通过命令行启动Ollama服务。
+    * 拉取您在 `settings.py` 或 `.env` 中配置的Ollama模型（例如 `ollama pull qwen3:4b`）。
 
-4.  **启动FastAPI后端开发服务器：**
+3.  **启动FastAPI后端开发服务器：**
     在项目**根目录**下，运行以下命令：
     ```bash
     pdm run uvicorn src.meta_prompt_agent.api.main:app --reload --port 8000
     ```
-    * `src.meta_prompt_agent.api.main:app` 指向FastAPI应用实例。
-    * `--reload` 使服务器在代码更改时自动重启。
-    * `--port 8000` 指定后端API服务运行在8000端口。
     您应该会看到类似 `Uvicorn running on http://127.0.0.1:8000` 的输出。
 
-### B. 前端 (React Web界面)
+### C. 前端 (React Web界面)
 
 1.  **确保您已安装 Node.js 和 npm (或 yarn)。**
-    您可以在终端运行 `node -v` 和 `npm -v` 来检查。
 
 2.  **进入前端项目目录并安装依赖：**
     从项目**根目录**下，进入 `frontend` 文件夹：
     ```bash
     cd frontend
     npm install 
-    # 或者如果您使用yarn:
-    # yarn install
+    # 或 yarn install
     ```
 
 3.  **启动React前端开发服务器：**
     在 `frontend` 目录下，运行：
     ```bash
     npm run dev
-    # 或者如果您使用yarn:
-    # yarn dev
+    # 或 yarn dev
     ```
-    这通常会在 `http://localhost:5173` (或Vite指定的其他端口) 启动前端开发服务器，并自动在浏览器中打开应用。
+    这通常会在 `http://localhost:5173` 启动前端开发服务器。
 
 ## 💡 使用方法 (Usage - MVP)
 
-1.  确保您的Ollama服务正在运行，并且FastAPI后端服务器和React前端开发服务器都已成功启动。
-2.  在浏览器中打开前端应用的地址（通常是 `http://localhost:5173`）。
-3.  您会看到 "Think Twice" 的界面。
-    * （可选）在输入框左侧选择一个任务场景（“研究”、“图像”、“代码”），默认为通用对话。
-    * 在主输入框中输入您对AI的初步想法或问题。
-    * 点击发送按钮（圆形带箭头图标）或按Enter键提交。
-    * 优化后的提示词（P1）将显示在下方。
-    * 如果AI处理时间较长，发送按钮会变为停止按钮，您可以点击它来中止前端的等待。
+1.  根据您在 `.env` 文件中配置的 `ACTIVE_LLM_PROVIDER`，确保相应的LLM服务（Ollama本地服务或云API密钥）已准备就绪。
+2.  分别启动FastAPI后端服务器和React前端开发服务器。
+3.  在浏览器中打开前端应用的地址（通常是 `http://localhost:5173`）。
+4.  体验 "Think Twice"！
 
 ## 🤝 如何贡献 (Contributing)
-
-我们非常欢迎社区的贡献！如果您有任何改进建议、功能需求或发现了Bug，请随时通过以下方式参与：
-
-* 提交 [GitHub Issues](https://github.com/Yanxing-R/meta-prompt-agent/issues) # 请替换为您的仓库地址
-* 创建 Pull Requests (请确保您的代码遵循项目规范并通过相关检查)
-
-在提交PR前，建议先创建一个Issue来讨论您的想法。
+# ... (保持不变，确保链接正确) ...
 
 ## 🗺️ 未来计划 (Roadmap)
-
+# ... (请您整合您之前的更新和我们最新的讨论) ...
 * **功能增强与智能化：**
-    * [X] 引入更高级的提示词评估指标和反馈机制。(已实现结构化JSON评估后端，前端利用待完成)
-    * [ ] **(下一步重点)** 在前端集成“AI辅助解释功能”，允许用户解释优化后提示词中的术语。
-    * [ ] 实现完整的人机协作元提示流程（P1 -> 用户反馈/编辑 -> E1 -> 用户反馈/编辑 -> P2 ...）。
-    * [ ] 完善用户反馈数据的收集与分析，用于持续改进代理性能。
-    * [ ] 引入用户历史交互记录，用于个性化提示词优化。
+    * [-] 引入更高级的提示词评估指标和反馈机制。(已实现结构化JSON评估后端)
+    * [ ] **(下一步重点)** 在前端集成“AI辅助解释功能”。
+    * [ ] 实现完整的人机协作元提示流程。
 * **模型支持与灵活性：**
-    * [ ] 支持更多本地LLM模型，并能动态选择。
-    * [ ] (长远) 集成外部更强大的LLM API服务。
+    * [-] 已支持Ollama, Gemini, 通义千问。
+    * [ ] 增加更多模型选择和动态切换能力。
     * [ ] (长远) 提供“快/慢思考”模式。
 * **用户体验与集成：**
     * [ ] 持续打磨和美化React前端UI/UX。
