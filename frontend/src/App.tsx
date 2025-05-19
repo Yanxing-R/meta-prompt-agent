@@ -80,7 +80,7 @@ function App() {
     const signal = abortControllerRef.current.signal;
 
     try {
-      const response = await fetch('http://localhost:8000/generate-simple-p1', {
+      const response = await fetch('/api/generate-simple-p1', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
