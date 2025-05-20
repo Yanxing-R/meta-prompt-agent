@@ -1,14 +1,10 @@
 # src/meta_prompt_agent/core/agent.py
 import logging
-import requests
 import json
 import os
-import google.generativeai as genai 
-import dashscope 
-from dashscope.api_entities.dashscope_response import Role 
-from http import HTTPStatus 
 
 from meta_prompt_agent.config import settings # 导入配置
+from meta_prompt_agent.config.settings import get_settings # 导入get_settings函数
 from meta_prompt_agent.prompts.templates import (
     CORE_META_PROMPT_TEMPLATE,
     EVALUATION_META_PROMPT_TEMPLATE,
@@ -16,207 +12,60 @@ from meta_prompt_agent.prompts.templates import (
     STRUCTURED_PROMPT_TEMPLATES,
     EXPLAIN_TERM_TEMPLATE
 )
+from meta_prompt_agent.core.llm import LLMClientFactory # 导入LLM工厂
 
 logger = logging.getLogger(__name__)
 
-# --- 通义千问 (Qwen) API 调用函数 (修正版) ---
-def call_qwen_api(prompt_content: str, messages_history: list = None) -> tuple[str, dict | None]:
+# --- 统一的LLM调用接口 ---
+async def invoke_llm(prompt_content: str, messages_history: list = None) -> tuple[str, dict | None]:
     """
-    调用通义千问 (Qwen) API。
+    使用LLM抽象层调用当前活跃的语言模型。
+    
+    Args:
+        prompt_content (str): 提示内容
+        messages_history (list, optional): 对话历史记录
+        
+    Returns:
+        tuple[str, dict | None]: (生成的文本, 错误信息)
     """
-    # 使用 settings.py 中定义的 QWEN_API_KEY_FROM_ENV
-    loaded_api_key = settings.QWEN_API_KEY_FROM_ENV 
-
-    if not loaded_api_key: # <--- 修改：使用 loaded_api_key (即 settings.QWEN_API_KEY_FROM_ENV)
-        error_msg = "错误：通义千问 API 密钥 (DASHSCOPE_API_KEY 或 QWEN_API_KEY) 未在 .env 文件中配置。"
-        logger.error(error_msg)
-        return error_msg, {"type": "ConfigurationError", "details": "API key for Qwen is not set."}
-
-    # 如果 .env 中设置的是 QWEN_API_KEY 而不是 DASHSCOPE_API_KEY, 
-    # 并且 SDK 不会自动识别 QWEN_API_KEY, 我们可能需要显式设置。
-    # 但如果 .env 中直接用了 DASHSCOPE_API_KEY, SDK 会自动处理。
-    # 为了保险，如果 DASHSCOPE_API_KEY 环境变量不存在，我们尝试用 loaded_api_key 设置。
-    if os.getenv('DASHSCOPE_API_KEY') is None and loaded_api_key:
-        logger.info("DASHSCOPE_API_KEY 环境变量未设置，尝试使用 settings.QWEN_API_KEY_FROM_ENV 设置 dashscope.api_key。")
-        dashscope.api_key = loaded_api_key
-    # 注意：如果用户在.env中只设置了QWEN_API_KEY，而没有设置DASHSCOPE_API_KEY，
-    # 并且dashscope.api_key = loaded_api_key 这一行由于某种原因没有正确生效或被SDK覆盖，
-    # 那么SDK可能仍然找不到密钥。最稳妥的是在.env中使用DASHSCOPE_API_KEY。
-
     try:
-        qwen_messages = []
+        # 获取配置
+        settings_dict = get_settings()
+        
+        # 获取当前活跃的LLM客户端
+        llm_client = LLMClientFactory.create()
+        provider = settings_dict["ACTIVE_LLM_PROVIDER"]
+        model_name = llm_client.model_name
+        
+        logger.info(f"使用 LLM 服务提供者: {provider} (模型: {model_name})")
+        
+        # 如果有对话历史，构建消息格式
+        kwargs = {}
         if messages_history:
-            for msg in messages_history:
-                role = msg.get("role")
-                qwen_role = Role.USER 
-                if role == "user": qwen_role = Role.USER
-                elif role == "assistant": qwen_role = Role.ASSISTANT 
-                elif role == "system": qwen_role = Role.SYSTEM
-                else: logger.warning(f"未知的消息角色 '{role}'，默认为 'user'。")
-                qwen_messages.append({'role': qwen_role, 'content': msg.get("content", "")})
+            # 注意：这里我们将传递历史消息，不同LLM客户端实现将负责处理适当的格式转换
+            kwargs["messages_history"] = messages_history
         
-        qwen_messages.append({'role': Role.USER, 'content': prompt_content})
-
-        logger.debug(f"向通义千问 API ({settings.QWEN_MODEL_NAME}) 发送请求。最后提示: {prompt_content[:100]}...")
+        # 调用LLM生成文本
+        response_text, metadata = await llm_client.generate_with_metadata(prompt_content, **kwargs)
         
-        response = dashscope.Generation.call(
-            model=settings.QWEN_MODEL_NAME,
-            messages=qwen_messages,
-            result_format='message', 
-        )
-
-        if response.status_code == HTTPStatus.OK:
-            if response.output and response.output.choices and response.output.choices[0].message and response.output.choices[0].message.content:
-                generated_text = response.output.choices[0].message.content
-                logger.info(f"成功从通义千问 API ({settings.QWEN_MODEL_NAME}) 获取响应。")
-                cleaned_content = clean_llm_output(generated_text)
-                return cleaned_content, None
-            else:
-                error_msg = "通义千问 API响应格式不符合预期（缺少output、choices或content）。"
-                logger.warning(f"{error_msg} 响应: {response}")
-                return f"错误：{error_msg}", {"type": "QwenFormatError", "details": str(response)}
-        else:
-            error_msg = (
-                f"通义千问 API 调用失败。状态码: {response.status_code}。"
-                f"请求ID: {response.request_id if hasattr(response, 'request_id') else 'N/A'}。"
-                f"错误代码: {response.code if hasattr(response, 'code') else 'N/A'}。"
-                f"错误消息: {response.message if hasattr(response, 'message') else 'N/A'}"
-            )
-            logger.error(error_msg)
-            return f"错误：{error_msg}", {
-                "type": "QwenAPIError", 
-                "status_code": response.status_code,
-                "request_id": response.request_id if hasattr(response, 'request_id') else None,
-                "error_code": response.code if hasattr(response, 'code') else None,
-                "error_message_from_api": response.message if hasattr(response, 'message') else None,
-                "raw_response": str(response) 
-            }
-
+        # 处理生成的文本
+        cleaned_response = clean_llm_output(response_text)
+        logger.info(f"成功从 {provider} ({model_name}) 获取响应。")
+        
+        return cleaned_response, None
+        
+    except ValueError as e:
+        error_msg = f"错误：LLM配置或请求无效: {str(e)}"
+        logger.error(error_msg)
+        return error_msg, {"type": "ConfigurationError", "details": str(e)}
+        
     except Exception as e:
-        error_msg = f"调用通义千问 API ({settings.QWEN_MODEL_NAME}) 时发生SDK或未知错误: {type(e).__name__} - {e}"
+        settings_dict = get_settings()
+        error_msg = f"错误：调用 {settings_dict['ACTIVE_LLM_PROVIDER']} 时发生未知错误: {type(e).__name__} - {str(e)}"
         logger.exception(error_msg)
-        return f"错误：{error_msg}", {"type": "QwenSDKError", "exception_type": type(e).__name__, "details": str(e)}
+        return error_msg, {"type": "LLMError", "exception_type": type(e).__name__, "details": str(e)}
 
-# --- Gemini API 调用函数 (保持不变) ---
-def call_gemini_api(prompt_content: str, messages_history: list = None) -> tuple[str, dict | None]:
-    # ... (您现有的 call_gemini_api 代码) ...
-    if not settings.GEMINI_API_KEY:
-        error_msg = "错误：Gemini API 密钥未配置。"
-        logger.error(error_msg)
-        return error_msg, {"type": "ConfigurationError", "details": "GEMINI_API_KEY is not set."}
-    try:
-        genai.configure(api_key=settings.GEMINI_API_KEY)
-        model = genai.GenerativeModel(settings.GEMINI_MODEL_NAME)
-        contents_for_gemini = []
-        if messages_history:
-            for msg in messages_history:
-                gemini_role = "user" if msg.get("role") == "user" else "model"
-                contents_for_gemini.append({"role": gemini_role, "parts": [msg.get("content", "")]})
-        contents_for_gemini.append({"role": "user", "parts": [prompt_content]})
-        
-        logger.debug(f"向 Gemini API ({settings.GEMINI_MODEL_NAME}) 发送请求。最后提示: {prompt_content[:100]}...")
-        response = model.generate_content(contents_for_gemini)
-
-        if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
-            generated_text = "".join(part.text for part in response.candidates[0].content.parts if hasattr(part, 'text'))
-            logger.info(f"成功从 Gemini API ({settings.GEMINI_MODEL_NAME}) 获取响应。")
-            return generated_text.strip(), None
-        else:
-            block_reason = response.prompt_feedback.block_reason if response.prompt_feedback else "未知"
-            safety_ratings_str = str(response.prompt_feedback.safety_ratings) if response.prompt_feedback else "无"
-            error_msg = f"Gemini API 未返回有效内容。可能原因: 内容被安全过滤器阻止 (原因: {block_reason}). 安全评级: {safety_ratings_str}"
-            logger.warning(error_msg)
-            return f"错误：{error_msg}", {"type": "GeminiContentError", "block_reason": str(block_reason), "safety_ratings": safety_ratings_str, "raw_response": str(response)}
-    except Exception as e:
-        error_msg = f"调用 Gemini API ({settings.GEMINI_MODEL_NAME}) 时发生错误: {type(e).__name__} - {e}"
-        logger.exception(error_msg) 
-        return f"错误：{error_msg}", {"type": "GeminiAPIError", "exception_type": type(e).__name__, "details": str(e)}
-
-# --- Ollama API 调用函数 (保持不变) ---
-def call_ollama_api(prompt_content: str, messages_history: list = None) -> tuple[str, dict | None]:
-    # ... (您现有的 call_ollama_api 代码) ...
-    current_messages = []
-    if messages_history:
-        current_messages.extend(messages_history)
-    current_messages.append({"role": "user", "content": prompt_content})
-    payload = {
-        "model": settings.OLLAMA_MODEL, "messages": current_messages, "stream": False
-    }
-    headers = {"Content-Type": "application/json"}
-    error_msg_prefix = "错误："
-    try:
-        logger.debug(f"向 Ollama API ({settings.OLLAMA_API_URL}) 发送请求。模型: {settings.OLLAMA_MODEL}")
-        response = requests.post(
-            settings.OLLAMA_API_URL, headers=headers, data=json.dumps(payload), timeout=180
-        )
-        response.raise_for_status()
-        response_data = response.json()
-        if "message" in response_data and "content" in response_data["message"]:
-            logger.info("成功从 Ollama API 获取响应。")
-            raw_content = response_data["message"]["content"]
-            cleaned_content = clean_llm_output(raw_content) 
-            return cleaned_content, None
-        else:
-            error_msg = "Ollama API响应格式不符合预期"
-            logger.warning(f"{error_msg}。响应数据: {response_data}")
-            return f"{error_msg_prefix}{error_msg}", {"type": "FormatError", "details": response_data}
-    except requests.exceptions.ConnectionError as e: 
-        error_msg = f"无法连接到Ollama服务: {settings.OLLAMA_API_URL}"
-        logger.error(f"{error_msg}. 详细错误: {e}", exc_info=True)
-        return f"{error_msg_prefix}{error_msg}", {"type": "ConnectionError", "url": settings.OLLAMA_API_URL, "details": str(e)}
-    except requests.exceptions.Timeout as e: 
-        error_msg = f"请求Ollama API超时 ({settings.OLLAMA_API_URL})"
-        logger.error(f"{error_msg}. 详细错误: {e}", exc_info=True)
-        return f"{error_msg_prefix}{error_msg}", {"type": "TimeoutError", "url": settings.OLLAMA_API_URL, "details": str(e)}
-    except requests.exceptions.HTTPError as e: 
-        error_text_detail = f"Ollama API交互失败 (HTTP {e.response.status_code})"
-        logger.error(f"{error_text_detail}. URL: {e.request.url if e.request else 'N/A'}. 响应内容: {e.response.text}", exc_info=True)
-        details = {"type": "HTTPError", "status_code": e.response.status_code, "raw_response": e.response.text}
-        error_text_for_user = error_text_detail
-        try:
-            error_details_json = e.response.json()
-            if "error" in error_details_json:
-                error_text_for_user += f". Ollama错误: {error_details_json['error']}"
-                details["ollama_error"] = error_details_json['error']
-        except json.JSONDecodeError:
-            logger.warning("解析HTTPError的响应体为JSON时失败。")
-            pass
-        return f"{error_msg_prefix}{error_text_for_user}", details
-    except json.JSONDecodeError as e: 
-        error_msg = "解析Ollama API响应为JSON时失败"
-        raw_response_text = "未知"
-        if 'response' in locals() and hasattr(response, 'text'): 
-            raw_response_text = response.text[:500]  
-        logger.error(f"{error_msg}. 详细错误: {e}. 部分原始响应: {raw_response_text}", exc_info=True)
-        return f"{error_msg_prefix}{error_msg}", {"type": "JSONDecodeError", "details": str(e), "raw_response_snippet": raw_response_text}
-    except Exception as e: 
-        error_msg = "调用Ollama API时发生未知内部错误" 
-        logger.exception(f"调用Ollama API时发生未知错误。原始错误: {e}") 
-        return f"{error_msg_prefix}{error_msg}", {"type": "UnknownError", "exception_type": e.__class__.__name__, "details": "详情请查看应用日志"}
-
-
-# --- 通用 LLM 调用接口 (更新) ---
-def invoke_llm(prompt_content: str, messages_history: list = None) -> tuple[str, dict | None]:
-    """
-    根据 ACTIVE_LLM_PROVIDER 配置调用相应的LLM API。
-    """
-    provider = settings.ACTIVE_LLM_PROVIDER
-    logger.info(f"使用 LLM 服务提供者: {provider} (模型: {settings.QWEN_MODEL_NAME if provider == 'qwen' else (settings.GEMINI_MODEL_NAME if provider == 'gemini' else settings.OLLAMA_MODEL)})")
-
-    if provider == "gemini":
-        return call_gemini_api(prompt_content, messages_history)
-    elif provider == "ollama":
-        return call_ollama_api(prompt_content, messages_history)
-    elif provider == "qwen": # 2. 添加对 qwen 的处理
-        return call_qwen_api(prompt_content, messages_history)
-    else:
-        error_msg = f"错误：未知的LLM服务提供者配置 '{provider}'。"
-        logger.error(error_msg)
-        return error_msg, {"type": "ConfigurationError", "details": f"ACTIVE_LLM_PROVIDER '{provider}' 不被支持。"}
-
-# --- 辅助函数 (如 clean_llm_output, load_and_format_structured_prompt 保持不变) ---
-# ... (clean_llm_output, load_and_format_structured_prompt, generate_and_refine_prompt, explain_term_in_prompt, load_feedback, save_feedback 函数定义) ...
-# 注意：generate_and_refine_prompt 和 explain_term_in_prompt 内部调用 invoke_llm 的逻辑不需要改变。
+# --- 辅助函数 ---
 def clean_llm_output(text: str) -> str:
     opening_marker = "<<think>>"
     closing_marker = "<</think>>" 
@@ -285,7 +134,7 @@ def load_and_format_structured_prompt(template_name: str, user_request: str, var
         logger.exception(f"格式化结构化提示模板 '{template_name}' 时发生未知错误。")
         return None
 
-def generate_and_refine_prompt(
+async def generate_and_refine_prompt(
     user_raw_request: str, task_type: str, enable_self_correction: bool,
     max_recursion_depth: int, use_structured_template_name: str = None,
     structured_template_vars: dict = None
@@ -316,7 +165,7 @@ def generate_and_refine_prompt(
                 initial_core_prompt_for_llm = CORE_META_PROMPT_TEMPLATE.format(user_raw_request=user_raw_request)
         results["initial_core_prompt"] = initial_core_prompt_for_llm
         conversation_history = []
-        p1, error = invoke_llm(initial_core_prompt_for_llm, None)
+        p1, error = await invoke_llm(initial_core_prompt_for_llm, None)
         if error:
             error_msg_for_results = f"生成初始优化提示失败: {p1}"
             logger.error(f"调用LLM生成初始提示失败。API返回: {p1}, 错误详情: {error}")
@@ -336,7 +185,7 @@ def generate_and_refine_prompt(
             eval_prompt_content = EVALUATION_META_PROMPT_TEMPLATE.format(
                 user_raw_request=user_raw_request, prompt_to_evaluate=current_best_prompt
             )
-            evaluation_report_str, error = invoke_llm(eval_prompt_content, []) 
+            evaluation_report_str, error = await invoke_llm(eval_prompt_content, []) 
             if error:
                 logger.warning(f"第 {i+1} 轮自我校正：生成评估报告失败。API返回: {evaluation_report_str}, 错误详情: {error}")
                 break
@@ -360,7 +209,7 @@ def generate_and_refine_prompt(
                 previous_prompt=current_best_prompt,
                 evaluation_report=evaluation_report_str 
             )
-            refined_prompt, error = invoke_llm(refinement_prompt_content, conversation_history)
+            refined_prompt, error = await invoke_llm(refinement_prompt_content, conversation_history)
             if error:
                 logger.warning(f"第 {i+1} 轮自我校正：生成精炼提示失败。API返回: {refined_prompt}, 错误详情: {error}")
                 break
@@ -384,7 +233,7 @@ def generate_and_refine_prompt(
             "error_details": {"type": "UnhandledException", "exception_type": e.__class__.__name__, "message": str(e)},
         }
 
-def explain_term_in_prompt(term_to_explain: str, context_prompt: str) -> tuple[str, dict | None]:
+async def explain_term_in_prompt(term_to_explain: str, context_prompt: str) -> tuple[str, dict | None]:
     if not term_to_explain or not term_to_explain.strip():
         logger.warning("explain_term_in_prompt: 'term_to_explain' 参数为空。")
         return "错误：需要提供要解释的术语。", {"type": "InputValidationError", "details": "待解释术语不能为空。"}
@@ -397,7 +246,7 @@ def explain_term_in_prompt(term_to_explain: str, context_prompt: str) -> tuple[s
             context_prompt=context_prompt
         )
         logger.info(f"为术语 '{term_to_explain}' 生成解释请求 (提供者: {settings.ACTIVE_LLM_PROVIDER})...")
-        explanation_text, error_details = invoke_llm(explanation_request_prompt) # 使用 invoke_llm
+        explanation_text, error_details = await invoke_llm(explanation_request_prompt) # 使用异步版本的 invoke_llm
         if error_details:
             logger.error(f"调用LLM解释术语 '{term_to_explain}' 时失败。API返回: {explanation_text}, 错误详情: {error_details}")
             return explanation_text, error_details
@@ -411,7 +260,6 @@ def explain_term_in_prompt(term_to_explain: str, context_prompt: str) -> tuple[s
         return "错误：解释过程中发生未知内部错误。", {"type": "UnknownExplanationError", "details": str(e)}
 
 def load_feedback() -> list:
-    # ... (保持不变) ...
     if not os.path.exists(settings.FEEDBACK_FILE):
         logger.info(f"反馈文件 '{settings.FEEDBACK_FILE}' 不存在，将返回空列表。")
         return []
@@ -431,7 +279,6 @@ def load_feedback() -> list:
         return []
 
 def save_feedback(all_feedback_data: list) -> bool:
-    # ... (保持不变) ...
     try:
         with open(settings.FEEDBACK_FILE, 'w', encoding='utf-8') as f:
             json.dump(all_feedback_data, f, ensure_ascii=False, indent=4)

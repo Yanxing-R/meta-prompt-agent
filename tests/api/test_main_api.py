@@ -1,7 +1,7 @@
 # tests/api/test_main_api.py
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import patch 
+from unittest.mock import patch, AsyncMock
 
 # 导入你的FastAPI应用实例和Pydantic模型
 from meta_prompt_agent.api.main import app as fastapi_app
@@ -27,7 +27,8 @@ def test_explain_term_endpoint_success(monkeypatch):
     )
 
     mock_explain_calls = []
-    def mock_successful_explain_term(term_to_explain: str, context_prompt: str):
+    # 修改为异步函数
+    async def mock_successful_explain_term(term_to_explain: str, context_prompt: str):
         mock_explain_calls.append({"term_to_explain": term_to_explain, "context_prompt": context_prompt})
         assert term_to_explain == term_to_explain_input 
         assert context_prompt == context_prompt_input
@@ -90,11 +91,11 @@ def test_explain_term_endpoint_input_validation_empty_context(monkeypatch):
         "context_prompt": "   " # 仅包含空白
     }
 
-    # 我们不需要mock explain_term_in_prompt，因为我们期望它被调用并执行其内部验证
-    # 但是，为了确保测试的隔离性，并且如果 explain_term_in_prompt 内部
-    # 在验证失败后还尝试做其他事情（比如调用 call_ollama_api），mocking 仍然有意义。
-    # 在这种情况下，explain_term_in_prompt 应该在验证失败后直接返回。
-    # 所以，我们不需要mock其内部的 call_ollama_api。
+    # 创建一个异步mock，返回验证错误
+    async def mock_validation_error(term_to_explain: str, context_prompt: str):
+        return "错误：需要提供术语所在的上下文提示。", {"type": "InputValidationError", "details": "上下文提示不能为空。"}
+    
+    monkeypatch.setattr('meta_prompt_agent.api.main.explain_term_in_prompt', mock_validation_error)
 
     # 2. 执行 (Act)
     response = client.post("/explain-term", json=request_payload_dict)
@@ -128,7 +129,7 @@ def test_explain_term_endpoint_agent_call_fails(monkeypatch):
     simulated_agent_error_details = {"type": "ConnectionError", "details": "模拟连接失败"}
 
     # 模拟 core.agent.explain_term_in_prompt 函数，使其返回一个错误
-    def mock_failing_explain_term(term_to_explain: str, context_prompt: str):
+    async def mock_failing_explain_term(term_to_explain: str, context_prompt: str):
         assert term_to_explain == term_to_explain_input
         assert context_prompt == context_prompt_input
         return simulated_agent_error_message, simulated_agent_error_details
