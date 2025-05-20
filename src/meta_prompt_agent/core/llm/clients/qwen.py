@@ -28,9 +28,17 @@ class QwenClient(LLMClient):
         temperature = kwargs.get("temperature", 0.7)
         max_tokens = kwargs.get("max_tokens", 1024)
         
+        # 处理模型覆盖
+        model_override = kwargs.get("model_override")
+        model_name = model_override if model_override else self.model_name
+        
+        # 更新客户端的模型名称，确保系统信息显示正确
+        if model_override:
+            self.model_name = model_override
+            
         # 构建请求数据
         request_data = {
-            "model": self.model_name,
+            "model": model_name,
             "input": {
                 "prompt": prompt
             },
@@ -38,7 +46,8 @@ class QwenClient(LLMClient):
                 "temperature": temperature,
                 "max_tokens": max_tokens,
                 "top_p": kwargs.get("top_p", 0.8),
-                "result_format": "text"
+                "result_format": "text",
+                "enable_thinking": False  # 对非流式调用必须设置为false
             }
         }
         

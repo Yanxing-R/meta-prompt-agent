@@ -14,6 +14,13 @@ class GeminiClient(LLMClient):
             
         self.model_name = model_name or self.settings["GEMINI_MODEL_NAME"]
         
+        # 模型映射，将前端友好名称映射到实际API模型名称
+        self.model_mapping = {
+            "gemini-1.5-pro": "gemini-1.5-pro",
+            "gemini-1.5-flash": "gemini-1.5-flash",
+            "gemini-1.0-pro": "gemini-1.0-pro"
+        }
+        
         # 配置Gemini
         genai.configure(api_key=self.api_key)
         
@@ -28,9 +35,19 @@ class GeminiClient(LLMClient):
         temperature = kwargs.get("temperature", 0.7)
         max_tokens = kwargs.get("max_tokens", 1024)
         
+        # 处理模型覆盖
+        model_override = kwargs.get("model_override")
+        model_name = self.model_name
+        
+        if model_override:
+            # 直接使用model_override作为模型名称
+            model_name = model_override
+            # 更新客户端的模型名称，确保系统信息显示正确
+            self.model_name = model_override
+        
         # 获取模型
         model = genai.GenerativeModel(
-            model_name=self.model_name,
+            model_name=model_name,
             generation_config={
                 "temperature": temperature,
                 "max_output_tokens": max_tokens,
@@ -47,7 +64,7 @@ class GeminiClient(LLMClient):
         
         # 提取元数据
         metadata = {
-            "model": self.model_name,
+            "model": model_name,
             "prompt_feedback": getattr(response, "prompt_feedback", {}),
             "candidates": [
                 getattr(candidate, "finish_reason", None)

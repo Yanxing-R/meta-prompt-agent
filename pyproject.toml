@@ -13,6 +13,9 @@ dependencies = [
     "google-generativeai>=0.8.5",
     "python-dotenv>=1.1.0",
     "dashscope>=1.23.3",
+    "fastapi>=0.115.12",
+    "uvicorn[standard]>=0.34.2",
+    "pydantic>=2.7.1",
 ]
 requires-python = ">=3.13"
 readme = "README.md"
@@ -31,10 +34,23 @@ includes = ["src/meta_prompt_agent"] # 或者只是 "src/" 然后pdm能自动发
 [tool.pdm.options]
 source_includes = ["src/"]
 
-[dependency-groups]
-dev = [
+[tool.pdm.dev-dependencies]
+testing = [
     "pytest>=8.3.5",
     "pytest-cov>=6.1.1",
+    "pytest-asyncio>=0.26.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+asyncio_mode = "auto"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=8.3.5",
+    "pytest-asyncio>=0.26.0",
     "fastapi>=0.115.12",
-    "uvicorn[standard]>=0.34.2",
+    "pytest-cov>=6.1.1",
 ]

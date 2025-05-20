@@ -15,8 +15,15 @@ class LLMClientFactory:
     }
     
     @classmethod
-    def create(cls, provider: str = None, **kwargs) -> LLMClient:
-        """创建LLM客户端实例"""
+    def create(cls, provider: str = None, model_override: str = None, **kwargs) -> LLMClient:
+        """
+        创建LLM客户端实例
+        
+        Args:
+            provider: 提供商名称，如果为None则使用配置中的活跃提供商
+            model_override: 要使用的模型名称，将传递给客户端构造函数
+            **kwargs: 其他传递给客户端构造函数的参数
+        """
         # 如果没有指定提供商，使用配置中的活跃提供商
         from ...config.settings import get_settings
         settings = get_settings()
@@ -26,6 +33,10 @@ class LLMClientFactory:
         # 检查提供商是否支持
         if active_provider not in cls._clients:
             raise ValueError(f"不支持的LLM提供商: {active_provider}")
+            
+        # 如果提供了model_override，添加到kwargs中
+        if model_override:
+            kwargs["model_name"] = model_override
             
         # 实例化客户端
         client_class = cls._clients[active_provider]

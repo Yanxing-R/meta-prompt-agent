@@ -17,13 +17,15 @@ from meta_prompt_agent.core.llm import LLMClientFactory # 导入LLM工厂
 logger = logging.getLogger(__name__)
 
 # --- 统一的LLM调用接口 ---
-async def invoke_llm(prompt_content: str, messages_history: list = None) -> tuple[str, dict | None]:
+async def invoke_llm(prompt_content: str, messages_history: list = None, model_override: str = None, provider_override: str = None) -> tuple[str, dict | None]:
     """
     使用LLM抽象层调用当前活跃的语言模型。
     
     Args:
         prompt_content (str): 提示内容
         messages_history (list, optional): 对话历史记录
+        model_override (str, optional): 覆盖默认模型的指定模型名称
+        provider_override (str, optional): 覆盖默认提供商的指定提供商名称
         
     Returns:
         tuple[str, dict | None]: (生成的文本, 错误信息)
@@ -32,10 +34,16 @@ async def invoke_llm(prompt_content: str, messages_history: list = None) -> tupl
         # 获取配置
         settings_dict = get_settings()
         
-        # 获取当前活跃的LLM客户端
-        llm_client = LLMClientFactory.create()
-        provider = settings_dict["ACTIVE_LLM_PROVIDER"]
-        model_name = llm_client.model_name
+        # 确定使用的提供商
+        provider = provider_override if provider_override else settings_dict["ACTIVE_LLM_PROVIDER"]
+        
+        logger.info(f"尝试使用提供商 '{provider}' {f'和模型 {model_override}' if model_override else ''} 生成响应...")
+        
+        # 获取当前活跃的LLM客户端（根据provider_override可能使用不同的提供商）
+        llm_client = LLMClientFactory.create(provider, model_override)
+        
+        # 确认使用的模型名称（在日志中记录）
+        model_name = model_override if model_override else llm_client.model_name
         
         logger.info(f"使用 LLM 服务提供者: {provider} (模型: {model_name})")
         
@@ -44,6 +52,11 @@ async def invoke_llm(prompt_content: str, messages_history: list = None) -> tupl
         if messages_history:
             # 注意：这里我们将传递历史消息，不同LLM客户端实现将负责处理适当的格式转换
             kwargs["messages_history"] = messages_history
+            
+        # 如果有模型覆盖，添加到kwargs
+        if model_override:
+            kwargs["model_override"] = model_override
+            logger.info(f"使用模型覆盖: {model_override}")
         
         # 调用LLM生成文本
         response_text, metadata = await llm_client.generate_with_metadata(prompt_content, **kwargs)
@@ -60,8 +73,7 @@ async def invoke_llm(prompt_content: str, messages_history: list = None) -> tupl
         return error_msg, {"type": "ConfigurationError", "details": str(e)}
         
     except Exception as e:
-        settings_dict = get_settings()
-        error_msg = f"错误：调用 {settings_dict['ACTIVE_LLM_PROVIDER']} 时发生未知错误: {type(e).__name__} - {str(e)}"
+        error_msg = f"错误：调用 {provider_override or settings_dict['ACTIVE_LLM_PROVIDER']} 时发生未知错误: {type(e).__name__} - {str(e)}"
         logger.exception(error_msg)
         return error_msg, {"type": "LLMError", "exception_type": type(e).__name__, "details": str(e)}
 
@@ -137,7 +149,8 @@ def load_and_format_structured_prompt(template_name: str, user_request: str, var
 async def generate_and_refine_prompt(
     user_raw_request: str, task_type: str, enable_self_correction: bool,
     max_recursion_depth: int, use_structured_template_name: str = None,
-    structured_template_vars: dict = None
+    structured_template_vars: dict = None, model_override: str = None,
+    provider_override: str = None
 ) -> dict:
     try:
         results = {
@@ -145,7 +158,7 @@ async def generate_and_refine_prompt(
             "evaluation_reports": [], "refined_prompts": [], "final_prompt": "",
             "error_message": None, "error_details": None,
         }
-        logger.info(f"开始处理任务类型 '{task_type}' 的请求: '{user_raw_request[:50]}...' (提供者: {settings.ACTIVE_LLM_PROVIDER})")
+        logger.info(f"开始处理任务类型 '{task_type}' 的请求: '{user_raw_request[:50]}...' (提供者: {provider_override or settings.ACTIVE_LLM_PROVIDER}, 模型: {model_override or '默认'})")
         initial_core_prompt_for_llm = ""
         if use_structured_template_name and structured_template_vars:
             formatted_prompt_from_structure = load_and_format_structured_prompt(
@@ -161,11 +174,13 @@ async def generate_and_refine_prompt(
                  initial_core_prompt_for_llm = STRUCTURED_PROMPT_TEMPLATES["BasicImageGen"]["core_template_override"].format(user_raw_request=user_raw_request)
             elif task_type == "代码生成" and "BasicCodeSnippet" in STRUCTURED_PROMPT_TEMPLATES:
                 initial_core_prompt_for_llm = CORE_META_PROMPT_TEMPLATE.format(user_raw_request=user_raw_request)
+            elif task_type == "视频生成" and "BasicVideoGen" in STRUCTURED_PROMPT_TEMPLATES:
+                initial_core_prompt_for_llm = STRUCTURED_PROMPT_TEMPLATES["BasicVideoGen"]["core_template_override"].format(user_raw_request=user_raw_request)
             else:
                 initial_core_prompt_for_llm = CORE_META_PROMPT_TEMPLATE.format(user_raw_request=user_raw_request)
         results["initial_core_prompt"] = initial_core_prompt_for_llm
         conversation_history = []
-        p1, error = await invoke_llm(initial_core_prompt_for_llm, None)
+        p1, error = await invoke_llm(initial_core_prompt_for_llm, None, model_override, provider_override)
         if error:
             error_msg_for_results = f"生成初始优化提示失败: {p1}"
             logger.error(f"调用LLM生成初始提示失败。API返回: {p1}, 错误详情: {error}")
@@ -185,7 +200,7 @@ async def generate_and_refine_prompt(
             eval_prompt_content = EVALUATION_META_PROMPT_TEMPLATE.format(
                 user_raw_request=user_raw_request, prompt_to_evaluate=current_best_prompt
             )
-            evaluation_report_str, error = await invoke_llm(eval_prompt_content, []) 
+            evaluation_report_str, error = await invoke_llm(eval_prompt_content, [], model_override, provider_override) 
             if error:
                 logger.warning(f"第 {i+1} 轮自我校正：生成评估报告失败。API返回: {evaluation_report_str}, 错误详情: {error}")
                 break
@@ -209,7 +224,7 @@ async def generate_and_refine_prompt(
                 previous_prompt=current_best_prompt,
                 evaluation_report=evaluation_report_str 
             )
-            refined_prompt, error = await invoke_llm(refinement_prompt_content, conversation_history)
+            refined_prompt, error = await invoke_llm(refinement_prompt_content, conversation_history, model_override, provider_override)
             if error:
                 logger.warning(f"第 {i+1} 轮自我校正：生成精炼提示失败。API返回: {refined_prompt}, 错误详情: {error}")
                 break
@@ -233,31 +248,34 @@ async def generate_and_refine_prompt(
             "error_details": {"type": "UnhandledException", "exception_type": e.__class__.__name__, "message": str(e)},
         }
 
-async def explain_term_in_prompt(term_to_explain: str, context_prompt: str) -> tuple[str, dict | None]:
+async def explain_term_in_prompt(term_to_explain: str, context_prompt: str, model_override: str = None, provider_override: str = None) -> tuple[str, dict | None]:
+    """解释提示词中的特定术语"""
+    logger.info(f"解释术语 '{term_to_explain}' (在长度为 {len(context_prompt)} 的上下文中), 模型: {model_override or '默认'}, 提供商: {provider_override or '默认'}")
+    
     if not term_to_explain or not term_to_explain.strip():
-        logger.warning("explain_term_in_prompt: 'term_to_explain' 参数为空。")
-        return "错误：需要提供要解释的术语。", {"type": "InputValidationError", "details": "待解释术语不能为空。"}
+        err_msg = "错误：要解释的术语不能为空。"
+        logger.warning(err_msg)
+        return err_msg, {"type": "InputValidationError", "details": "术语不能为空"}
+        
     if not context_prompt or not context_prompt.strip():
-        logger.warning("explain_term_in_prompt: 'context_prompt' 参数为空。")
-        return "错误：需要提供术语所在的上下文提示。", {"type": "InputValidationError", "details": "上下文提示不能为空。"}
-    try:
-        explanation_request_prompt = EXPLAIN_TERM_TEMPLATE.format(
-            term_to_explain=term_to_explain,
-            context_prompt=context_prompt
-        )
-        logger.info(f"为术语 '{term_to_explain}' 生成解释请求 (提供者: {settings.ACTIVE_LLM_PROVIDER})...")
-        explanation_text, error_details = await invoke_llm(explanation_request_prompt) # 使用异步版本的 invoke_llm
-        if error_details:
-            logger.error(f"调用LLM解释术语 '{term_to_explain}' 时失败。API返回: {explanation_text}, 错误详情: {error_details}")
-            return explanation_text, error_details
-        logger.info(f"成功获取术语 '{term_to_explain}' 的解释。")
-        return explanation_text.strip(), None
-    except KeyError as e:
-        logger.exception(f"格式化 EXPLAIN_TERM_TEMPLATE 时发生 KeyError: {e}.")
-        return "错误：解释模板格式化失败。", {"type": "TemplateFormatError", "details": str(e)}
-    except Exception as e:
-        logger.exception(f"解释术语 '{term_to_explain}' 时发生未知错误。")
-        return "错误：解释过程中发生未知内部错误。", {"type": "UnknownExplanationError", "details": str(e)}
+        err_msg = "错误：需要提供上下文才能解释术语。"
+        logger.warning(err_msg)
+        return err_msg, {"type": "InputValidationError", "details": "上下文不能为空"}
+    
+    explanation_prompt = EXPLAIN_TERM_TEMPLATE.format(
+        term_to_explain=term_to_explain,
+        context=context_prompt
+    )
+    
+    explanation, error = await invoke_llm(explanation_prompt, None, model_override, provider_override)
+    
+    if error:
+        err_msg = f"错误：解释术语时发生问题: {explanation}"
+        logger.error(f"调用LLM解释术语失败，返回的错误: {explanation}")
+        return err_msg, error
+    
+    logger.info(f"成功获取术语 '{term_to_explain}' 的解释")
+    return explanation, None
 
 def load_feedback() -> list:
     if not os.path.exists(settings.FEEDBACK_FILE):
