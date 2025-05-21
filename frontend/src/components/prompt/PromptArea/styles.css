@@ -1,0 +1,122 @@
+.prompt-area {
+  width: 100%;
+}
+
+.prompt-input-container {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+.prompt-textarea {
+  width: 100%;
+  min-height: 150px;
+  padding: 16px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background-color: var(--input-bg-color);
+  color: var(--text-color);
+  font-size: 1rem;
+  line-height: 1.5;
+  resize: vertical;
+  transition: border-color 0.2s;
+}
+
+.prompt-textarea:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 2px rgba(46, 134, 222, 0.2);
+}
+
+.prompt-textarea:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.prompt-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.prompt-error {
+  margin-top: 12px;
+  padding: 12px;
+  background-color: var(--error-light-bg);
+  border-radius: 6px;
+  color: var(--error-color);
+  font-size: 0.9rem;
+}
+
+.prompt-result-container {
+  width: 100%;
+}
+
+.prompt-result-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.prompt-result-header h3 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 0;
+  color: var(--text-color);
+}
+
+.prompt-result-textarea {
+  width: 100%;
+  min-height: 200px;
+  padding: 16px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background-color: var(--input-bg-color);
+  color: var(--text-color);
+  font-size: 1rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.prompt-result-textarea:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 2px rgba(46, 134, 222, 0.2);
+}
+
+/* 改进说明区域样式 */
+.prompt-improvement-notes-container {
+  margin-top: 16px;
+  padding: 12px 16px;
+  background-color: var(--card-bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+}
+
+.prompt-improvement-notes-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 0 0 8px 0;
+  color: var(--text-color);
+}
+
+.prompt-improvement-notes {
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--text-secondary-color);
+  white-space: pre-wrap;
+}
+
+/* 屏幕阅读器专用类，视觉上隐藏但对屏幕阅读器可见 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+} 

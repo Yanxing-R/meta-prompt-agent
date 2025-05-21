@@ -16,9 +16,8 @@ class GeminiClient(LLMClient):
         
         # 模型映射，将前端友好名称映射到实际API模型名称
         self.model_mapping = {
-            "gemini-1.5-pro": "gemini-1.5-pro",
-            "gemini-1.5-flash": "gemini-1.5-flash",
-            "gemini-1.0-pro": "gemini-1.0-pro"
+            "gemini-2.0-flash": "gemini-2.0-flash",
+            "gemini-2.5-flash": "gemini-2.5-flash-preview-05-20"
         }
         
         # 配置Gemini
@@ -40,36 +39,34 @@ class GeminiClient(LLMClient):
         model_name = self.model_name
         
         if model_override:
-            # 直接使用model_override作为模型名称
-            model_name = model_override
-            # 更新客户端的模型名称，确保系统信息显示正确
-            self.model_name = model_override
+            # 如果模型在映射中，使用映射后的名称
+            model_name = self.model_mapping.get(model_override, model_override)
+            print(f"使用模型覆盖: {model_override} -> {model_name}")
+            # 更新客户端的模型名称
+            self.model_name = model_name
         
-        # 获取模型
-        model = genai.GenerativeModel(
-            model_name=model_name,
-            generation_config={
-                "temperature": temperature,
-                "max_output_tokens": max_tokens,
-                "top_p": kwargs.get("top_p", 0.95),
-                "top_k": kwargs.get("top_k", 0)
-            }
-        )
+        # 添加调试日志
+        print(f"Gemini调用参数: 模型={model_name}, 温度={temperature}, 最大令牌数={max_tokens}")
         
-        # 生成响应
-        response = await model.generate_content_async(prompt)
-        
-        # 提取响应文本
-        response_text = response.text
-        
-        # 提取元数据
-        metadata = {
-            "model": model_name,
-            "prompt_feedback": getattr(response, "prompt_feedback", {}),
-            "candidates": [
-                getattr(candidate, "finish_reason", None)
-                for candidate in getattr(response, "candidates", [])
-            ]
-        }
-        
-        return response_text, metadata 
+        try:
+            # 获取模型
+            model = genai.GenerativeModel(
+                model_name=model_name,
+                generation_config={
+                    "temperature": temperature,
+                    "max_output_tokens": max_tokens,
+                    "top_p": kwargs.get("top_p", 0.95),
+                    "top_k": kwargs.get("top_k", 0)
+                }
+            )
+            
+            # 生成响应
+            response = await model.generate_content_async(prompt)
+            
+            # 提取响应文本
+            response_text = response.text
+            
+            return response_text, {"model": model_name}
+        except Exception as e:
+            print(f"Gemini API调用失败: {str(e)}")
+            raise 

@@ -25,13 +25,13 @@ OLLAMA_API_URL: str = os.getenv("OLLAMA_API_URL", "http://localhost:11434")
 
 # --- Gemini API 配置 ---
 GEMINI_API_KEY: str | None = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL_NAME: str = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash-latest") 
+GEMINI_MODEL_NAME: str = os.getenv("GEMINI_MODEL_NAME", "gemini-2.0-flash") 
 
 # --- 通义千问 (Qwen) API 配置 ---
 # DashScope SDK 优先查找 DASHSCOPE_API_KEY
 # 我们也允许通过 QWEN_API_KEY 设置，但在 .env 中推荐使用 DASHSCOPE_API_KEY
 QWEN_API_KEY_FROM_ENV: str | None = os.getenv("DASHSCOPE_API_KEY") or os.getenv("QWEN_API_KEY")
-QWEN_MODEL_NAME: str = os.getenv("QWEN_MODEL_NAME", "qwen3-4b") # 默认使用青云3-4B模型
+QWEN_MODEL_NAME: str = os.getenv("QWEN_MODEL_NAME", "qwen-plus-2025-04-28") # 默认使用青云3-4B模型
 
 # --- 当前激活的LLM服务提供者 ---
 ACTIVE_LLM_PROVIDER: str = os.getenv("ACTIVE_LLM_PROVIDER", "qwen").lower()

@@ -1,0 +1,46 @@
+.loading-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(255, 255, 255, 0.7);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  z-index: 100;
+  pointer-events: none; /* 允许点击穿透 */
+}
+
+.dark-theme .loading-overlay {
+  background-color: rgba(30, 30, 30, 0.7);
+}
+
+.cream-theme .loading-overlay {
+  background-color: rgba(251, 242, 233, 0.7);
+}
+
+.loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 4px solid rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  border-top-color: var(--color-text-accent);
+  animation: spin 1s ease-in-out infinite;
+  margin-bottom: 8px;
+}
+
+.loading-overlay p {
+  color: var(--color-text-primary);
+  font-size: 1rem;
+  margin: 0;
+  padding: 8px 16px;
+  border-radius: 8px;
+  background-color: var(--bg-card);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+} 

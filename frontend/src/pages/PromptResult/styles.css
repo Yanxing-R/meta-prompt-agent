@@ -1,0 +1,132 @@
+.prompt-result-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 2rem 1rem;
+  min-height: calc(100vh - var(--header-height));
+}
+
+.result-container {
+  width: 100%;
+  max-width: 900px;
+  background-color: var(--bg-card);
+  border-radius: var(--border-radius-lg);
+  box-shadow: var(--shadow-md);
+  padding: 2rem;
+  border: 1px solid var(--border-color-light);
+}
+
+.result-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.result-title {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 0;
+  color: var(--color-text-primary);
+  flex-grow: 1;
+  text-align: center;
+}
+
+.result-actions {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.improvement-notes {
+  margin-bottom: 1.5rem;
+  padding: 1rem;
+  background-color: var(--bg-main);
+  border-radius: var(--border-radius-md);
+  border: 1px solid var(--border-color-light);
+}
+
+.improvement-notes-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 0 0 0.75rem 0;
+  color: var(--color-text-primary);
+}
+
+.improvement-notes-content {
+  font-size: 0.95rem;
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.prompt-content-container {
+  border: 1px solid var(--border-color-light);
+  border-radius: var(--border-radius-md);
+  overflow: hidden;
+}
+
+.prompt-content-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  background-color: var(--bg-main);
+  border-bottom: 1px solid var(--border-color-light);
+}
+
+.prompt-content-title {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0;
+  color: var(--color-text-primary);
+}
+
+.prompt-content {
+  padding: 1rem;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.prompt-content pre {
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  font-family: var(--font-monospace);
+  font-size: 0.9rem;
+  line-height: 1.6;
+  color: var(--color-text-primary);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.feedback-section {
+  margin-top: 2rem;
+}
+
+.btn-copy-success {
+  background-color: var(--color-success-light) !important;
+  color: var(--color-success) !important;
+  border-color: var(--color-success) !important;
+}
+
+@media (max-width: 768px) {
+  .result-container {
+    padding: 1.5rem;
+  }
+  
+  .result-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  
+  .result-title {
+    order: -1;
+    margin-bottom: 1rem;
+  }
+  
+  .result-actions {
+    justify-content: center;
+  }
+} 

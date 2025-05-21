@@ -354,10 +354,46 @@ const cleanPromptForCopy = (prompt: string): string => {
   if (!prompt) return '';
   
   let cleaned = prompt;
-
-  // 移除Markdown代码块标记 (```json, ```markdown, ```text, ``` 等)
-  cleaned = cleaned.replace(/^```(\w*\s*)?\n?/gm, '').replace(/\n?```$/gm, '');
-
+  
+  // 优先检查是否有 <prompt_to_copy> 标签
+  const promptToCopyMatch = cleaned.match(/<prompt_to_copy>([\s\S]*?)<\/prompt_to_copy>/);
+  if (promptToCopyMatch && promptToCopyMatch[1]) {
+    // 如果有 <prompt_to_copy> 标签，直接提取其中的内容并返回
+    return promptToCopyMatch[1].trim();
+  }
+  
+  // 如果没有 <prompt_to_copy> 标签，继续原有的逻辑
+  
+  // 1. 查找 ```markdown 标记位置
+  const markdownStartMatch = cleaned.match(/```markdown\s*\n/i);
+  if (markdownStartMatch && markdownStartMatch.index !== undefined) {
+    // 获取 ```markdown 之后的位置
+    const startPosition = markdownStartMatch.index + markdownStartMatch[0].length;
+    
+    // 跳过指定的行数（这里示例跳过2行）
+    const linesAfterMarkdown = cleaned.slice(startPosition).split('\n');
+    const skipLines = 2; // 可以设置为参数或配置项
+    
+    if (linesAfterMarkdown.length > skipLines) {
+      // 从第skipLines行之后开始（索引skipLines处）
+      const newContent = linesAfterMarkdown.slice(skipLines).join('\n');
+      
+      // 查找结束标记 ``` 
+      const endMarkdownMatch = newContent.match(/\n```\s*$/);
+      
+      if (endMarkdownMatch) {
+        // 如果有结束标记，则取到结束标记之前的内容
+        cleaned = newContent.slice(0, endMarkdownMatch.index);
+      } else {
+        // 没有结束标记，取全部内容
+        cleaned = newContent;
+      }
+    }
+  } else {
+    // 如果没有找到 ```markdown，则按原有方式处理
+    // 移除Markdown代码块标记 (```json, ```markdown, ```text, ``` 等)
+    cleaned = cleaned.replace(/^```(\w*\s*)?\n?/gm, '').replace(/\n?```$/gm, '');
+    
   // 移除常见的LLM引导性/总结性短语
   const phrasesToRemove = [
     /^您现在是一个.*AI助手。您的任务是.*$/gim, // 角色设定
@@ -404,16 +440,16 @@ const cleanPromptForCopy = (prompt: string): string => {
     /^已为您优化请求：$/gim,
   ];
 
-  phrasesToRemove.forEach(phraseRegex => {
-    cleaned = cleaned.replace(phraseRegex, '');
-  });
+    phrasesToRemove.forEach(phraseRegex => {
+      cleaned = cleaned.replace(phraseRegex, '');
+    });
+  }
   
   // 移除由上述替换可能产生的连续空行，保留最多一个空行
   cleaned = cleaned.replace(/\n\s*\n/g, '\n\n');
   // 移除开头和结尾的空行
   cleaned = cleaned.trim();
   
-  console.log("清理后的提示词 (for copy):", cleaned);
   return cleaned;
 };
 
@@ -1181,12 +1217,12 @@ function App() {
       if (selectedComparisonStep === 0) {
         // 初始提示词 vs 最终提示词
         setSourcePrompt(initialPrompt);
-        setTargetPrompt(generatedPrompt);
+        setTargetPrompt(getDisplayPrompt(generatedPrompt));
       } else if (selectedComparisonStep > 0 && selectedComparisonStep <= processedSteps.length) {
         // 选择特定轮次比较
         const stepIndex = selectedComparisonStep - 1;
         setSourcePrompt(processedSteps[stepIndex].promptBeforeEvaluation);
-        setTargetPrompt(processedSteps[stepIndex].promptAfterRefinement);
+        setTargetPrompt(getDisplayPrompt(processedSteps[stepIndex].promptAfterRefinement));
       }
     }
   }, [showStepsView, selectedComparisonStep, processedSteps, initialPrompt, generatedPrompt]);
@@ -1227,10 +1263,30 @@ function App() {
 
     try {
       const endpoint = advancedMode ? '/api/generate-advanced-prompt' : '/api/generate-simple-p1';
-      const modelInfo = selectedModel !== "default" && selectedProvider ? { model: selectedModel, provider: selectedProvider } : undefined;
+      
+      // 确保只有当两者都有值时才包含modelInfo
+      const modelInfo = selectedModel !== "default" && selectedProvider 
+        ? { model: selectedModel, provider: selectedProvider } 
+        : undefined;
+      
+      console.log("模型选择信息:", modelInfo);
+      
       const requestBody = advancedMode
-        ? { raw_request: rawRequest, task_type: taskTypeToSend, enable_self_correction: selfCorrection, max_recursion_depth: recursionDepth, model_info: modelInfo }
-        : { raw_request: rawRequest, task_type: taskTypeToSend, model_info: modelInfo };
+        ? { 
+            raw_request: rawRequest, 
+            task_type: taskTypeToSend, 
+            enable_self_correction: selfCorrection, 
+            max_recursion_depth: recursionDepth, 
+            model_info: modelInfo
+          }
+        : { 
+            raw_request: rawRequest, 
+            task_type: taskTypeToSend, 
+            model_info: modelInfo
+          };
+      
+      // 添加日志，输出发送到后端的请求体
+      console.log("发送到后端的请求:", requestBody);
       
       const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(requestBody), signal });
       if (signal.aborted) { setError("请求已取消。"); return; }
@@ -1492,7 +1548,7 @@ function App() {
             </div>
             <div className="step-content-block after">
               <div className="label">优化后 (P{step.stepNumber + 1}):</div>
-              <pre>{step.promptAfterRefinement || "N/A"}</pre>
+              <pre>{getDisplayPrompt(step.promptAfterRefinement) || "N/A"}</pre>
             </div>
           </div>
           {step.evaluationReport && (
@@ -1856,6 +1912,21 @@ function App() {
     }
   };
   
+  // 添加处理显示提示词的函数
+  const getDisplayPrompt = (prompt: string): string => {
+    if (!prompt) return '';
+    
+    // 查找<prompt_to_copy>标签
+    const promptToCopyMatch = prompt.match(/<prompt_to_copy>([\s\S]*?)<\/prompt_to_copy>/);
+    if (promptToCopyMatch && promptToCopyMatch[1]) {
+      // 如果找到标签，只显示标签内的内容
+      return promptToCopyMatch[1].trim();
+    }
+    
+    // 如果没有找到标签，显示原始内容
+    return prompt;
+  };
+  
   return (
     <div className="app-container">
       {/* 页面头部 */}
@@ -2027,7 +2098,7 @@ function App() {
           
           <div className="result-content">
             <h3>优化后的提示:</h3>
-            <pre className="final-prompt-display">{generatedPrompt}</pre>
+            <pre className="final-prompt-display">{getDisplayPrompt(generatedPrompt)}</pre>
             
             {showTermExplainer && termExplanation && (
               <div className="term-explainer card-style inset">

@@ -1,0 +1,151 @@
+.comparison-view {
+  width: 100%;
+  margin-top: 20px;
+}
+
+.comparison-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.comparison-selector-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary-color);
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.comparison-buttons {
+  display: flex;
+  gap: 10px;
+}
+
+/* 统一视图样式 */
+.unified-view {
+  background-color: var(--card-bg-color);
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  overflow: hidden;
+}
+
+.unified-content {
+  padding: 16px;
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+.unified-content pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--mono-font);
+  font-size: 0.9rem;
+  line-height: 1.6;
+  color: var(--text-color);
+}
+
+/* 并排对比视图样式 */
+.side-by-side-view {
+  display: flex;
+  background-color: var(--card-bg-color);
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  overflow: hidden;
+}
+
+.comparison-column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0; /* 防止内容溢出 */
+}
+
+.comparison-divider {
+  width: 1px;
+  background-color: var(--border-color);
+}
+
+.comparison-header {
+  padding: 10px 16px;
+  background-color: var(--card-header-bg);
+  border-bottom: 1px solid var(--border-color);
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text-secondary-color);
+}
+
+.comparison-content {
+  padding: 16px;
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+.comparison-content pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--mono-font);
+  font-size: 0.9rem;
+  line-height: 1.6;
+  color: var(--text-color);
+}
+
+/* 逐步对比视图样式 */
+.step-by-step-view {
+  background-color: var(--card-bg-color);
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  padding: 16px;
+}
+
+.step-comparison-info {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 200px;
+  color: var(--text-tertiary-color);
+}
+
+/* 差异高亮样式 */
+.diff-viewer {
+  font-family: var(--mono-font);
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.diff-line {
+  padding: 2px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.diff-part {
+  display: inline;
+}
+
+.diff-part.added {
+  background-color: var(--diff-added-bg);
+  color: var(--diff-added-text);
+}
+
+.diff-part.removed {
+  background-color: var(--diff-removed-bg);
+  color: var(--diff-removed-text);
+  text-decoration: line-through;
+}
+
+/* 响应式调整 */
+@media (max-width: 768px) {
+  .side-by-side-view {
+    flex-direction: column;
+  }
+  
+  .comparison-divider {
+    width: 100%;
+    height: 1px;
+  }
+} 

@@ -1,0 +1,119 @@
+.task-type-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border-color-light);
+}
+
+.task-type-label {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.task-types-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.task-type-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.task-type-button {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 1rem;
+  border-radius: 20px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  background-color: var(--bg-button-secondary);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: 1px solid var(--border-color-light);
+}
+
+.task-type-button:hover {
+  background-color: var(--bg-button-secondary-hover);
+  color: var(--color-text-accent);
+  border-color: var(--color-text-accent);
+}
+
+.task-type-button.selected {
+  background-color: var(--bg-button-primary);
+  color: white;
+  border-color: var(--bg-button-primary);
+}
+
+.task-type-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.dropdown-icon {
+  margin-left: 4px;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  transition: transform 0.2s ease;
+}
+
+.dropdown-icon.open {
+  transform: rotate(180deg);
+}
+
+/* 确保下拉菜单不会影响布局 */
+.task-type-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 100;
+  min-width: 200px;
+  margin-top: 8px;
+  background-color: var(--bg-card);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  border: 1px solid var(--border-color-light);
+  padding: 0.75rem;
+}
+
+/* 下拉菜单箭头 */
+.task-type-dropdown-arrow {
+  position: absolute;
+  top: -6px;
+  left: 20px;
+  width: 12px;
+  height: 12px;
+  background-color: var(--bg-card);
+  border-left: 1px solid var(--border-color-light);
+  border-top: 1px solid var(--border-color-light);
+  transform: rotate(45deg);
+}
+
+.task-type-dropdown-content {
+  position: relative;
+  z-index: 1;
+}
+
+/* 响应式调整 */
+@media (max-width: 600px) {
+  .task-type-selector {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  
+  .task-type-label {
+    margin-bottom: 8px;
+  }
+  
+  .task-types-container {
+    width: 100%;
+  }
+} 

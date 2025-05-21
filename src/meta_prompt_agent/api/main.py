@@ -132,6 +132,84 @@ class SystemInfoResponse(BaseModel):
     structured_templates: List[str] | None = None
     available_models: List[Dict[str, Any]] | None = None
 
+# 添加一个辅助函数，用于从ModelInfo创建代理
+def get_agent(model_info: Optional[ModelInfo] = None):
+    """
+    从模型信息创建Agent
+    
+    Args:
+        model_info: 可选的模型信息
+        
+    Returns:
+        返回一个Agent类，能够生成提示
+    """
+    class Agent:
+        def __init__(self, model_override=None, provider_override=None):
+            self.model_override = model_override
+            self.provider_override = provider_override
+            logger.info(f"创建Agent: model_override={model_override}, provider_override={provider_override}")
+            
+        async def generate_p1_prompt(self, raw_request, task_type):
+            """生成简单的P1提示"""
+            logger.info(f"Agent开始生成P1提示: {raw_request[:50]}..., 任务类型: {task_type}")
+            result = await generate_and_refine_prompt(
+                user_raw_request=raw_request, 
+                task_type=task_type, 
+                enable_self_correction=False, 
+                max_recursion_depth=0,
+                model_override=self.model_override,
+                provider_override=self.provider_override
+            )
+            
+            if result.get("error_message"):
+                raise Exception(result.get("error_message"))
+                
+            return result.get("p1_initial_optimized_prompt", "")
+            
+        async def generate_advanced_prompt(self, raw_request, task_type, enable_self_correction=True, max_recursion_depth=2, template_name=None, template_variables=None):
+            """生成高级提示，支持自我校正"""
+            logger.info(f"Agent开始生成高级提示: {raw_request[:50]}..., 任务类型: {task_type}, 自我校正: {enable_self_correction}, 递归深度: {max_recursion_depth}")
+            result = await generate_and_refine_prompt(
+                user_raw_request=raw_request, 
+                task_type=task_type, 
+                enable_self_correction=enable_self_correction, 
+                max_recursion_depth=max_recursion_depth,
+                use_structured_template_name=template_name,
+                structured_template_vars=template_variables,
+                model_override=self.model_override,
+                provider_override=self.provider_override
+            )
+            
+            if result.get("error_message"):
+                raise Exception(result.get("error_message"))
+                
+            return result
+            
+        async def explain_term_in_prompt(self, term_to_explain, context_prompt):
+            """解释提示中的特定术语"""
+            logger.info(f"Agent开始解释术语: {term_to_explain}, 上下文长度: {len(context_prompt)}")
+            return await explain_term_in_prompt(
+                term_to_explain=term_to_explain,
+                context_prompt=context_prompt,
+                model_override=self.model_override,
+                provider_override=self.provider_override
+            )
+    
+    # 获取模型和提供商覆盖
+    model_override = None
+    provider_override = None
+    
+    if model_info:
+        if model_info.model and model_info.model != "default":
+            model_override = model_info.model
+            logger.info(f"使用指定模型: {model_override}")
+            
+        if model_info.provider:
+            provider_override = model_info.provider
+            logger.info(f"使用指定提供商: {provider_override}")
+    
+    return Agent(model_override, provider_override)
+
 @app.get("/", tags=["General"])
 async def read_root():
     logger.info("访问了根端点 /")
@@ -164,25 +242,14 @@ async def get_system_info(settings: dict = Depends(get_api_settings)):
 
         cloud_provider_definitions = {
             "gemini": [
-                {"name": "Gemini 1.5 Pro", "value": "gemini-1.5-pro", "provider": "gemini", "group": "Gemini模型"},
-                {"name": "Gemini 1.5 Flash", "value": "gemini-1.5-flash", "provider": "gemini", "group": "Gemini模型"},
-                {"name": "Gemini 1.0 Pro", "value": "gemini-1.0-pro", "provider": "gemini", "group": "Gemini模型"}
+                {"name": "Gemini 2.0 Flash", "value": "gemini-2.0-flash", "provider": "gemini", "group": "Gemini模型"},
+                {"name": "Gemini 2.5 Flash", "value": "gemini-2.5-flash-preview-05-20", "provider": "gemini", "group": "Gemini模型"}
             ],
             "qwen": [
                 {"name": "通义千问-Max (qwen-max)", "value": "qwen-max", "provider": "qwen", "group": "通义千问 (API)"},
                 {"name": "通义千问-Plus (qwen-plus)", "value": "qwen-plus", "provider": "qwen", "group": "通义千问 (API)"},
                 {"name": "通义千问-Turbo (qwen-turbo)", "value": "qwen-turbo", "provider": "qwen", "group": "通义千问 (API)"},
-                {"name": "通义千问-Long (qwen-long)", "value": "qwen-long", "provider": "qwen", "group": "通义千问 (API)"},
-                {"name": "通义千问1.5-110B (qwen1.5-110b-chat)", "value": "qwen1.5-110b-chat", "provider": "qwen", "group": "通义千问1.5 (API)"},
-                {"name": "通义千问1.5-72B (qwen1.5-72b-chat)", "value": "qwen1.5-72b-chat", "provider": "qwen", "group": "通义千问1.5 (API)"},
-                {"name": "通义千问1.5-32B (qwen1.5-32b-chat)", "value": "qwen1.5-32b-chat", "provider": "qwen", "group": "通义千问1.5 (API)"},
-                {"name": "通义千问1.5-14B (qwen1.5-14b-chat)", "value": "qwen1.5-14b-chat", "provider": "qwen", "group": "通义千问1.5 (API)"},
-                {"name": "通义千问1.5-7B (qwen1.5-7b-chat)", "value": "qwen1.5-7b-chat", "provider": "qwen", "group": "通义千问1.5 (API)"},
-                {"name": "通义千问1.5-1.8B (qwen1.5-1.8b-chat)", "value": "qwen1.5-1.8b-chat", "provider": "qwen", "group": "通义千问1.5 (API)"},
-                {"name": "通义千问2-72B (qwen2-72b-instruct)", "value": "qwen2-72b-instruct", "provider": "qwen", "group": "通义千问2 (API)"},
-                {"name": "通义千问2-57B-A14B (qwen2-57b-a14b-instruct)", "value": "qwen2-57b-a14b-instruct", "provider": "qwen", "group": "通义千问2 (API)"},
-                {"name": "通义千问2-7B (qwen2-7b-instruct)", "value": "qwen2-7b-instruct", "provider": "qwen", "group": "通义千问2 (API)"},
-                {"name": "通义千问2-1.5B (qwen2-1.5b-instruct)", "value": "qwen2-1.5b-instruct", "provider": "qwen", "group": "通义千问2 (API)"},
+                {"name": "通义千问-Plus (qwen-plus-2025-04-28)", "value": "qwen-plus-2025-04-28", "provider": "qwen", "group": "通义千问 (API)"}
             ],
             "openai": [
                 {"name": "GPT-4", "value": "gpt-4", "provider": "openai", "group": "OpenAI模型"},
@@ -253,39 +320,8 @@ async def get_current_model_info(settings: dict = Depends(get_api_settings)):
 async def generate_simple_p1_endpoint(request_data: UserRequest):
     logger.info(f"收到生成P1的请求: {request_data.raw_request[:50]}..., 任务类型: {request_data.task_type}, 模型信息: {request_data.model_info}")
     try:
-        if not callable(generate_and_refine_prompt):
-             logger.error("核心函数 generate_and_refine_prompt 未成功导入或不可调用。")
-             raise HTTPException(status_code=500, detail="服务器内部配置错误: 核心逻辑不可用。")
-
-        model_override = None
-        provider_override = None
-        if request_data.model_info:
-            model_override = request_data.model_info.model
-            provider_override = request_data.model_info.provider
-            logger.info(f"使用自定义模型: {model_override} (提供商: {provider_override})")
-
-        results = await generate_and_refine_prompt(
-            user_raw_request=request_data.raw_request,
-            task_type=request_data.task_type,
-            enable_self_correction=False,
-            max_recursion_depth=0,
-            use_structured_template_name=None,
-            structured_template_vars=None,
-            model_override=model_override,
-            provider_override=provider_override
-        )
-
-        if results.get("error_message"):
-            logger.error(f"生成P1时发生错误: {results.get('error_message')}, 详情: {results.get('error_details')}")
-            raise HTTPException(
-                status_code=500,
-                detail=str(results.get('error_message', "生成P1时发生内部错误"))
-            )
-
-        p1_prompt = results.get("p1_initial_optimized_prompt")
-        if not p1_prompt:
-            logger.error("generate_and_refine_prompt 返回成功但 p1_initial_optimized_prompt 为空。")
-            raise HTTPException(status_code=500, detail="无法生成P1提示，未知错误。")
+        agent = get_agent(request_data.model_info)
+        p1_prompt = await agent.generate_p1_prompt(request_data.raw_request, request_data.task_type)
 
         logger.info(f"成功为请求 '{request_data.raw_request[:50]}...' 生成P1提示。")
         return P1Response(
@@ -316,37 +352,12 @@ async def generate_advanced_prompt_endpoint(request_data: AdvancedPromptRequest)
         f"最大递归深度: {request_data.max_recursion_depth}, 模板: {request_data.template_name}, 模型信息: {request_data.model_info}"
     )
     try:
-        if not callable(generate_and_refine_prompt):
-            logger.error("核心函数 generate_and_refine_prompt 未成功导入或不可调用。")
-            raise HTTPException(status_code=500, detail="服务器内部配置错误: 核心逻辑不可用。")
-
-        model_override = None
-        provider_override = None
-        if request_data.model_info:
-            model_override = request_data.model_info.model
-            provider_override = request_data.model_info.provider
-            logger.info(f"使用自定义模型: {model_override} (提供商: {provider_override})")
-
-        results = await generate_and_refine_prompt(
-            user_raw_request=request_data.raw_request,
-            task_type=request_data.task_type,
-            enable_self_correction=request_data.enable_self_correction,
-            max_recursion_depth=request_data.max_recursion_depth,
-            use_structured_template_name=request_data.template_name,
-            structured_template_vars=request_data.template_variables,
-            model_override=model_override,
-            provider_override=provider_override
+        agent = get_agent(request_data.model_info)
+        results = await agent.generate_advanced_prompt(
+            request_data.raw_request, request_data.task_type,
+            request_data.enable_self_correction, request_data.max_recursion_depth,
+            request_data.template_name, request_data.template_variables
         )
-
-        if results.get("error_message"):
-            logger.error(
-                f"生成高级提示时发生错误: {results.get('error_message')}, "
-                f"详情: {results.get('error_details')}"
-            )
-            raise HTTPException(
-                status_code=500,
-                detail=str(results.get('error_message', "生成高级提示时发生内部错误"))
-            )
 
         final_prompt = results.get("final_prompt")
         initial_prompt = results.get("p1_initial_optimized_prompt")
@@ -386,22 +397,9 @@ async def generate_advanced_prompt_endpoint(request_data: AdvancedPromptRequest)
 async def explain_term_endpoint(request_data: ExplainTermRequest):
     logger.info(f"收到解释术语的请求: '{request_data.term_to_explain}', 上下文长度: {len(request_data.context_prompt)}, 模型信息: {request_data.model_info}")
     try:
-        if not callable(explain_term_in_prompt):
-            logger.error("核心函数 explain_term_in_prompt 未成功导入或不可调用。")
-            raise HTTPException(status_code=500, detail="服务器内部配置错误: 解释逻辑不可用。")
-
-        model_override = None
-        provider_override = None
-        if request_data.model_info:
-            model_override = request_data.model_info.model
-            provider_override = request_data.model_info.provider
-            logger.info(f"使用自定义模型: {model_override} (提供商: {provider_override})")
-
-        explanation_text, error_details_tuple = await explain_term_in_prompt(
-            term_to_explain=request_data.term_to_explain,
-            context_prompt=request_data.context_prompt,
-            model_override=model_override,
-            provider_override=provider_override
+        agent = get_agent(request_data.model_info)
+        explanation_text, error_details_tuple = await agent.explain_term_in_prompt(
+            request_data.term_to_explain, request_data.context_prompt
         )
 
         if error_details_tuple:
