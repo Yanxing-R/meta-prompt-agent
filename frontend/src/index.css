@@ -30,7 +30,7 @@ body {
   min-height: 100vh; /* 确保根容器至少和视口一样高 */
   display: flex;
   flex-direction: column; /* 使内部内容（如 App 组件）能够垂直排列 */
-  align-items: center; /* 水平居中 .app-container */
+  align-items: stretch; /* 改为stretch以确保子元素填充整个宽度 */
   /* #root 本身不需要 overflow-x: hidden，body已经处理了 */
 }
 

@@ -5,14 +5,30 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
 import json
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Literal
 from datetime import datetime
+from enum import Enum
 
 try:
-    from meta_prompt_agent.core.agent import generate_and_refine_prompt, explain_term_in_prompt, load_feedback, save_feedback
+    from meta_prompt_agent.core.agent import (
+        generate_and_refine_prompt, 
+        explain_term_in_prompt, 
+        load_feedback, 
+        save_feedback,
+        create_interactive_session,
+        generate_p1_prompt_for_session,
+        evaluate_prompt_for_session,
+        refine_prompt_for_session,
+        complete_session,
+        update_prompt_by_user
+    )
+    from meta_prompt_agent.core.session_manager import (
+        get_session_manager,
+        SessionStage,
+        PromptSession
+    )
     from meta_prompt_agent.config.logging_config import setup_logging
-    # Ollama specific imports (get_ollama_models) are removed
-    from meta_prompt_agent.config.settings import get_settings, IS_DEV_ENV # IS_DEV_ENV might still be useful for other dev-specific logic
+    from meta_prompt_agent.config.settings import get_settings, IS_DEV_ENV
     from meta_prompt_agent.api.docs import custom_openapi_schema
     # setup_logging()
 except ImportError as e:
@@ -25,11 +41,32 @@ except ImportError as e:
         return []
     async def save_feedback(*args, **kwargs): # type: ignore
         return False
+    # 交互式会话相关函数的占位符
+    async def create_interactive_session(*args, **kwargs): # type: ignore
+        return None, {"type": "ImportError", "message": "核心逻辑未正确导入"}
+    async def generate_p1_prompt_for_session(*args, **kwargs): # type: ignore
+        return None, {"type": "ImportError", "message": "核心逻辑未正确导入"}
+    async def evaluate_prompt_for_session(*args, **kwargs): # type: ignore
+        return None, {"type": "ImportError", "message": "核心逻辑未正确导入"}
+    async def refine_prompt_for_session(*args, **kwargs): # type: ignore
+        return None, {"type": "ImportError", "message": "核心逻辑未正确导入"}
+    async def complete_session(*args, **kwargs): # type: ignore
+        return None, {"type": "ImportError", "message": "核心逻辑未正确导入"}
+    async def update_prompt_by_user(*args, **kwargs): # type: ignore
+        return None, {"type": "ImportError", "message": "核心逻辑未正确导入"}
+    def get_session_manager(*args, **kwargs): # type: ignore
+        return None
     def custom_openapi_schema(app): # type: ignore
         def custom_openapi(): return {}
         return custom_openapi
     def get_settings(): return {"ACTIVE_LLM_PROVIDER": "default"} # type: ignore
     IS_DEV_ENV = False # type: ignore
+    class SessionStage(str, Enum): # type: ignore
+        CREATED = "created"
+        P1_GENERATED = "p1_generated"
+        EVALUATION_COMPLETE = "evaluation_complete"
+        REFINEMENT_COMPLETE = "refinement_complete"
+        COMPLETED = "completed"
     pass
 
 
@@ -500,6 +537,597 @@ async def list_feedback(
     except Exception as e:
         logger.exception(f"获取反馈列表时发生错误: {e}")
         raise HTTPException(status_code=500, detail=f"获取反馈列表时发生错误: {str(e)}")
+
+# --- 交互式会话API的Pydantic模型 ---
+class SessionCreateRequest(BaseModel):
+    """创建交互式会话的请求模型"""
+    raw_request: str = Field(..., min_length=1, description="用户的原始文本请求")
+    task_type: str = Field(default="通用/问答", description="任务类型")
+    model_info: Optional[ModelInfo] = Field(None, description="模型和提供商信息")
+    template_name: Optional[str] = Field(None, description="结构化模板名称")
+    template_variables: Optional[Dict[str, Any]] = Field(None, description="模板变量")
+    max_recursion_depth: int = Field(default=3, ge=1, le=5, description="最大递归深度")
+
+class SessionResponse(BaseModel):
+    """会话响应的基础模型"""
+    session_id: str
+    stage: str
+    message: Optional[str] = None
+    error: Optional[str] = None
+
+class UserPromptUpdate(BaseModel):
+    """用户对提示词的修改请求"""
+    updated_prompt: str = Field(..., min_length=1, description="用户修改后的提示词")
+    stage: Literal["p1", "current", "final"] = Field(default="current", description="要修改的提示词阶段")
+    comments: Optional[str] = Field(None, description="用户对修改的说明")
+
+class PromptGenerationResponse(BaseModel):
+    """提示词生成响应"""
+    session_id: str
+    stage: str
+    prompt: str
+    original_request: str
+    message: Optional[str] = None
+    error: Optional[str] = None
+
+class EvaluationResponse(BaseModel):
+    """评估报告响应"""
+    session_id: str
+    stage: str
+    prompt: str
+    evaluation_report: Any
+    message: Optional[str] = None
+    error: Optional[str] = None
+
+class SessionListResponse(BaseModel):
+    """会话列表响应"""
+    sessions: List[Dict[str, Any]]
+    total_count: int
+    
+class SessionDetailResponse(BaseModel):
+    """会话详情响应"""
+    session_id: str
+    user_raw_request: str
+    task_type: str
+    stage: str
+    created_at: str
+    last_updated: str
+    p1_prompt: str
+    evaluation_reports: List[Any]
+    refined_prompts: List[str]
+    current_prompt: str
+    final_prompt: str
+    model_override: Optional[str]
+    provider_override: Optional[str]
+    conversation_history: List[Dict[str, str]]
+    user_modifications: List[Dict[str, Any]]
+    error: Optional[Dict[str, Any]] = None
+
+# --- 交互式会话API端点 ---
+@app.post(
+    "/sessions",
+    response_model=SessionResponse,
+    tags=["Interactive Sessions"],
+    summary="创建新的交互式会话",
+    responses={
+        422: {"model": ErrorResponse, "description": "请求体验证失败"},
+        500: {"model": ErrorResponse, "description": "服务器内部错误"}
+    }
+)
+async def create_session_endpoint(request_data: SessionCreateRequest):
+    """创建新的交互式提示词生成会话"""
+    logger.info(f"收到创建会话请求: {request_data.raw_request[:50]}..., 任务类型: {request_data.task_type}")
+    
+    try:
+        # 获取模型和提供商
+        model_override = None
+        provider_override = None
+        
+        if request_data.model_info:
+            if request_data.model_info.model and request_data.model_info.model != "default":
+                model_override = request_data.model_info.model
+            if request_data.model_info.provider:
+                provider_override = request_data.model_info.provider
+        
+        # 创建会话
+        session, error = await create_interactive_session(
+            user_raw_request=request_data.raw_request,
+            task_type=request_data.task_type,
+            model_override=model_override,
+            provider_override=provider_override,
+            template_name=request_data.template_name,
+            template_variables=request_data.template_variables,
+            max_recursion_depth=request_data.max_recursion_depth
+        )
+        
+        if error:
+            logger.error(f"创建会话失败: {error}")
+            raise HTTPException(status_code=500, detail=f"创建会话失败: {error.get('message', '未知错误')}")
+        
+        logger.info(f"成功创建会话: {session.session_id}")
+        return SessionResponse(
+            session_id=session.session_id,
+            stage=session.stage,
+            message="会话创建成功"
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"创建会话时发生未预料的错误: {e}")
+        raise HTTPException(status_code=500, detail=f"服务器处理请求时发生意外错误: {str(e)}")
+
+@app.post(
+    "/sessions/{session_id}/generate-p1",
+    response_model=PromptGenerationResponse,
+    tags=["Interactive Sessions"],
+    summary="为会话生成初步P1提示词",
+    responses={
+        404: {"model": ErrorResponse, "description": "会话不存在"},
+        422: {"model": ErrorResponse, "description": "请求体验证失败"},
+        500: {"model": ErrorResponse, "description": "服务器内部错误"}
+    }
+)
+async def generate_p1_for_session_endpoint(session_id: str):
+    """为指定会话生成初步提示词 (P1)"""
+    logger.info(f"收到为会话 {session_id} 生成P1提示词的请求")
+    
+    try:
+        # 生成P1提示词
+        session, error = await generate_p1_prompt_for_session(session_id)
+        
+        if not session:
+            raise HTTPException(status_code=404, detail=f"会话 {session_id} 不存在")
+        
+        if error and error.get("type") != "InvalidStage":
+            logger.error(f"生成P1提示词失败: {error}")
+            return PromptGenerationResponse(
+                session_id=session_id,
+                stage=session.stage,
+                prompt=session.p1_prompt or "",
+                original_request=session.user_raw_request,
+                error=error.get("message", "生成P1提示词失败")
+            )
+        
+        logger.info(f"成功为会话 {session_id} 生成P1提示词")
+        return PromptGenerationResponse(
+            session_id=session_id,
+            stage=session.stage,
+            prompt=session.p1_prompt,
+            original_request=session.user_raw_request,
+            message="P1提示词已成功生成"
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"生成P1提示词时发生未预料的错误: {e}")
+        raise HTTPException(status_code=500, detail=f"服务器处理请求时发生意外错误: {str(e)}")
+
+@app.post(
+    "/sessions/{session_id}/evaluate",
+    response_model=EvaluationResponse,
+    tags=["Interactive Sessions"],
+    summary="评估会话中的当前提示词",
+    responses={
+        404: {"model": ErrorResponse, "description": "会话不存在"},
+        422: {"model": ErrorResponse, "description": "请求体验证失败"},
+        500: {"model": ErrorResponse, "description": "服务器内部错误"}
+    }
+)
+async def evaluate_prompt_for_session_endpoint(session_id: str):
+    """评估指定会话的当前提示词"""
+    logger.info(f"收到评估会话 {session_id} 当前提示词的请求")
+    
+    try:
+        # 评估提示词
+        session, error = await evaluate_prompt_for_session(session_id)
+        
+        if not session:
+            raise HTTPException(status_code=404, detail=f"会话 {session_id} 不存在")
+        
+        if error and error.get("type") not in ["InvalidStage"]:
+            logger.error(f"评估提示词失败: {error}")
+            return EvaluationResponse(
+                session_id=session_id,
+                stage=session.stage,
+                prompt=session.current_prompt or "",
+                evaluation_report=session.current_evaluation or {},
+                error=error.get("message", "评估提示词失败")
+            )
+        
+        logger.info(f"成功评估会话 {session_id} 的当前提示词")
+        return EvaluationResponse(
+            session_id=session_id,
+            stage=session.stage,
+            prompt=session.current_prompt,
+            evaluation_report=session.current_evaluation or session.evaluation_reports[-1] if session.evaluation_reports else {},
+            message="提示词评估已完成"
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"评估提示词时发生未预料的错误: {e}")
+        raise HTTPException(status_code=500, detail=f"服务器处理请求时发生意外错误: {str(e)}")
+
+@app.post(
+    "/sessions/{session_id}/refine",
+    response_model=PromptGenerationResponse,
+    tags=["Interactive Sessions"],
+    summary="优化会话中的当前提示词",
+    responses={
+        404: {"model": ErrorResponse, "description": "会话不存在"},
+        422: {"model": ErrorResponse, "description": "请求体验证失败"},
+        500: {"model": ErrorResponse, "description": "服务器内部错误"}
+    }
+)
+async def refine_prompt_for_session_endpoint(session_id: str):
+    """优化指定会话的当前提示词"""
+    logger.info(f"收到优化会话 {session_id} 当前提示词的请求")
+    
+    try:
+        # 优化提示词
+        session, error = await refine_prompt_for_session(session_id)
+        
+        if not session:
+            raise HTTPException(status_code=404, detail=f"会话 {session_id} 不存在")
+        
+        if error and error.get("type") not in ["InvalidStage", "MaxDepthReached"]:
+            logger.error(f"优化提示词失败: {error}")
+            return PromptGenerationResponse(
+                session_id=session_id,
+                stage=session.stage,
+                prompt=session.current_prompt or "",
+                original_request=session.user_raw_request,
+                error=error.get("message", "优化提示词失败")
+            )
+        
+        logger.info(f"成功优化会话 {session_id} 的当前提示词")
+        return PromptGenerationResponse(
+            session_id=session_id,
+            stage=session.stage,
+            prompt=session.current_prompt,
+            original_request=session.user_raw_request,
+            message="提示词优化已完成" + (" (已达到最大递归深度)" if error and error.get("type") == "MaxDepthReached" else "")
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"优化提示词时发生未预料的错误: {e}")
+        raise HTTPException(status_code=500, detail=f"服务器处理请求时发生意外错误: {str(e)}")
+
+@app.post(
+    "/sessions/{session_id}/complete",
+    response_model=PromptGenerationResponse,
+    tags=["Interactive Sessions"],
+    summary="完成会话，将当前提示词标记为最终提示词",
+    responses={
+        404: {"model": ErrorResponse, "description": "会话不存在"},
+        422: {"model": ErrorResponse, "description": "请求体验证失败"},
+        500: {"model": ErrorResponse, "description": "服务器内部错误"}
+    }
+)
+async def complete_session_endpoint(session_id: str):
+    """完成指定会话，将当前提示词标记为最终提示词"""
+    logger.info(f"收到完成会话 {session_id} 的请求")
+    
+    try:
+        # 完成会话
+        session, error = await complete_session(session_id)
+        
+        if not session:
+            raise HTTPException(status_code=404, detail=f"会话 {session_id} 不存在")
+        
+        if error:
+            logger.error(f"完成会话失败: {error}")
+            return PromptGenerationResponse(
+                session_id=session_id,
+                stage=session.stage,
+                prompt=session.current_prompt or "",
+                original_request=session.user_raw_request,
+                error=error.get("message", "完成会话失败")
+            )
+        
+        logger.info(f"成功完成会话 {session_id}")
+        return PromptGenerationResponse(
+            session_id=session_id,
+            stage=session.stage,
+            prompt=session.final_prompt,
+            original_request=session.user_raw_request,
+            message="会话已完成，最终提示词已设置"
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"完成会话时发生未预料的错误: {e}")
+        raise HTTPException(status_code=500, detail=f"服务器处理请求时发生意外错误: {str(e)}")
+
+@app.post(
+    "/sessions/{session_id}/user-update",
+    response_model=PromptGenerationResponse,
+    tags=["Interactive Sessions"],
+    summary="用户修改会话中的提示词",
+    responses={
+        404: {"model": ErrorResponse, "description": "会话不存在"},
+        422: {"model": ErrorResponse, "description": "请求体验证失败"},
+        500: {"model": ErrorResponse, "description": "服务器内部错误"}
+    }
+)
+async def update_prompt_by_user_endpoint(session_id: str, update_data: UserPromptUpdate):
+    """用户修改指定会话中的提示词"""
+    logger.info(f"收到用户修改会话 {session_id} 提示词的请求，阶段: {update_data.stage}")
+    
+    try:
+        # 用户修改提示词
+        session, error = await update_prompt_by_user(
+            session_id=session_id,
+            updated_prompt=update_data.updated_prompt,
+            stage=update_data.stage,
+            comments=update_data.comments
+        )
+        
+        if not session:
+            raise HTTPException(status_code=404, detail=f"会话 {session_id} 不存在")
+        
+        if error:
+            logger.error(f"用户修改提示词失败: {error}")
+            return PromptGenerationResponse(
+                session_id=session_id,
+                stage=session.stage,
+                prompt=session.current_prompt or "",
+                original_request=session.user_raw_request,
+                error=error.get("message", "用户修改提示词失败")
+            )
+        
+        logger.info(f"用户成功修改会话 {session_id} 的提示词")
+        return PromptGenerationResponse(
+            session_id=session_id,
+            stage=session.stage,
+            prompt=session.current_prompt,
+            original_request=session.user_raw_request,
+            message=f"提示词已成功修改 (阶段: {update_data.stage})"
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"用户修改提示词时发生未预料的错误: {e}")
+        raise HTTPException(status_code=500, detail=f"服务器处理请求时发生意外错误: {str(e)}")
+
+@app.get(
+    "/sessions",
+    response_model=SessionListResponse,
+    tags=["Interactive Sessions"],
+    summary="获取会话列表",
+    responses={
+        500: {"model": ErrorResponse, "description": "服务器内部错误"}
+    }
+)
+async def list_sessions_endpoint(
+    limit: int = Query(20, ge=1, le=100, description="要返回的会话数量"),
+    offset: int = Query(0, ge=0, description="分页起始位置")
+):
+    """获取会话列表"""
+    logger.info(f"收到获取会话列表请求: limit={limit}, offset={offset}")
+    
+    try:
+        # 获取会话管理器
+        session_manager = get_session_manager()
+        
+        # 获取会话列表
+        sessions = await session_manager.list_sessions(limit=limit, offset=offset)
+        
+        logger.info(f"成功获取 {len(sessions)} 个会话")
+        return SessionListResponse(
+            sessions=sessions,
+            total_count=len(sessions)  # 这里是简化实现，实际中可能需要单独查询总数
+        )
+    
+    except Exception as e:
+        logger.exception(f"获取会话列表时发生未预料的错误: {e}")
+        raise HTTPException(status_code=500, detail=f"服务器处理请求时发生意外错误: {str(e)}")
+
+@app.get(
+    "/sessions/{session_id}",
+    response_model=SessionDetailResponse,
+    tags=["Interactive Sessions"],
+    summary="获取会话详情",
+    responses={
+        404: {"model": ErrorResponse, "description": "会话不存在"},
+        500: {"model": ErrorResponse, "description": "服务器内部错误"}
+    }
+)
+async def get_session_endpoint(session_id: str):
+    """获取指定会话的详细信息"""
+    logger.info(f"收到获取会话 {session_id} 详情的请求")
+    
+    try:
+        # 获取会话管理器
+        session_manager = get_session_manager()
+        
+        # 获取会话
+        session = await session_manager.get_session(session_id)
+        
+        if not session:
+            raise HTTPException(status_code=404, detail=f"会话 {session_id} 不存在")
+        
+        # 构造响应
+        response_data = {
+            "session_id": session.session_id,
+            "user_raw_request": session.user_raw_request,
+            "task_type": session.task_type,
+            "stage": session.stage,
+            "created_at": session.created_at,
+            "last_updated": session.last_updated,
+            "p1_prompt": session.p1_prompt,
+            "evaluation_reports": session.evaluation_reports,
+            "refined_prompts": session.refined_prompts,
+            "current_prompt": session.current_prompt,
+            "final_prompt": session.final_prompt,
+            "model_override": session.model_override,
+            "provider_override": session.provider_override,
+            "conversation_history": session.conversation_history,
+            "user_modifications": session.user_modifications
+        }
+        
+        if session.last_error:
+            response_data["error"] = {
+                "message": session.last_error,
+                "stage": session.error_stage
+            }
+        
+        logger.info(f"成功获取会话 {session_id} 详情")
+        return SessionDetailResponse(**response_data)
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"获取会话详情时发生未预料的错误: {e}")
+        raise HTTPException(status_code=500, detail=f"服务器处理请求时发生意外错误: {str(e)}")
+
+@app.delete(
+    "/sessions/{session_id}",
+    response_model=Dict[str, Any],
+    tags=["Interactive Sessions"],
+    summary="删除会话",
+    responses={
+        404: {"model": ErrorResponse, "description": "会话不存在"},
+        500: {"model": ErrorResponse, "description": "服务器内部错误"}
+    }
+)
+async def delete_session_endpoint(session_id: str):
+    """删除指定会话"""
+    logger.info(f"收到删除会话 {session_id} 的请求")
+    
+    try:
+        # 获取会话管理器
+        session_manager = get_session_manager()
+        
+        # 删除会话
+        success = await session_manager.delete_session(session_id)
+        
+        if not success:
+            raise HTTPException(status_code=404, detail=f"会话 {session_id} 不存在或删除失败")
+        
+        logger.info(f"成功删除会话 {session_id}")
+        return {
+            "success": True,
+            "message": f"会话 {session_id} 已成功删除"
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"删除会话时发生未预料的错误: {e}")
+        raise HTTPException(status_code=500, detail=f"服务器处理请求时发生意外错误: {str(e)}")
+
+@app.post(
+    "/sessions/{session_id}/auto-process",
+    response_model=PromptGenerationResponse,
+    tags=["Interactive Sessions"],
+    summary="自动处理会话直到完成",
+    responses={
+        404: {"model": ErrorResponse, "description": "会话不存在"},
+        500: {"model": ErrorResponse, "description": "服务器内部错误"}
+    }
+)
+async def auto_process_session_endpoint(session_id: str):
+    """自动处理会话，执行完整流程直到完成"""
+    logger.info(f"收到自动处理会话 {session_id} 的请求")
+    
+    try:
+        # 获取会话管理器
+        session_manager = get_session_manager()
+        
+        # 获取会话
+        session = await session_manager.get_session(session_id)
+        
+        if not session:
+            raise HTTPException(status_code=404, detail=f"会话 {session_id} 不存在")
+        
+        # 根据当前阶段自动处理
+        if session.stage == SessionStage.CREATED:
+            # 生成P1提示词
+            session, error = await generate_p1_prompt_for_session(session_id)
+            if error and error.get("type") != "InvalidStage":
+                raise HTTPException(status_code=500, detail=f"生成P1提示词失败: {error.get('message', '未知错误')}")
+        
+        # 评估与优化循环
+        max_iterations = session.max_recursion_depth
+        current_iterations = 0
+        
+        while session.stage != SessionStage.COMPLETED and current_iterations < max_iterations:
+            if session.stage == SessionStage.P1_GENERATED or session.stage == SessionStage.REFINEMENT_COMPLETE:
+                # 评估当前提示词
+                session, error = await evaluate_prompt_for_session(session_id)
+                if error and error.get("type") != "InvalidStage":
+                    raise HTTPException(status_code=500, detail=f"评估提示词失败: {error.get('message', '未知错误')}")
+            
+            if session.stage == SessionStage.EVALUATION_COMPLETE:
+                # 优化当前提示词
+                session, error = await refine_prompt_for_session(session_id)
+                if error and error.get("type") not in ["InvalidStage", "MaxDepthReached"]:
+                    raise HTTPException(status_code=500, detail=f"优化提示词失败: {error.get('message', '未知错误')}")
+                
+                # 如果达到最大深度或优化停止，完成会话
+                if error and error.get("type") == "MaxDepthReached":
+                    break
+            
+            current_iterations += 1
+        
+        # 完成会话
+        session, error = await complete_session(session_id)
+        if error:
+            logger.warning(f"完成会话失败: {error}")
+        
+        logger.info(f"成功自动处理会话 {session_id}")
+        return PromptGenerationResponse(
+            session_id=session_id,
+            stage=session.stage,
+            prompt=session.final_prompt or session.current_prompt or "",
+            original_request=session.user_raw_request,
+            message=f"会话已自动处理完成，执行了 {current_iterations} 轮迭代"
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"自动处理会话时发生未预料的错误: {e}")
+        raise HTTPException(status_code=500, detail=f"服务器处理请求时发生意外错误: {str(e)}")
+
+# 定时任务端点
+@app.post(
+    "/system/clean-expired-sessions",
+    tags=["System"],
+    summary="清理过期会话",
+    responses={
+        500: {"model": ErrorResponse, "description": "服务器内部错误"}
+    }
+)
+async def clean_expired_sessions_endpoint():
+    """清理过期的会话"""
+    logger.info("收到清理过期会话的请求")
+    
+    try:
+        # 获取会话管理器
+        session_manager = get_session_manager()
+        
+        # 清理过期会话
+        cleaned_count = await session_manager.clean_expired_sessions()
+        
+        logger.info(f"成功清理 {cleaned_count} 个过期会话")
+        return {
+            "success": True,
+            "message": f"已清理 {cleaned_count} 个过期会话",
+            "cleaned_count": cleaned_count
+        }
+    
+    except Exception as e:
+        logger.exception(f"清理过期会话时发生未预料的错误: {e}")
+        raise HTTPException(status_code=500, detail=f"服务器处理请求时发生意外错误: {str(e)}")
 
 if __name__ == "__main__":
     if 'setup_logging' in globals() and callable(setup_logging):

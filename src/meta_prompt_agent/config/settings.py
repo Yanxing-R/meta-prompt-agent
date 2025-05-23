@@ -39,6 +39,19 @@ ACTIVE_LLM_PROVIDER: str = os.getenv("ACTIVE_LLM_PROVIDER", "qwen").lower()
 # --- 其他应用配置 ---
 FEEDBACK_FILE: str = "user_feedback.json"
 
+# --- 会话管理相关配置 ---
+SESSION_STORAGE_TYPE: str = os.getenv("SESSION_STORAGE_TYPE", "memory")  # 可选值: "memory", "redis", "file"
+SESSION_EXPIRY_SECONDS: int = int(os.getenv("SESSION_EXPIRY_SECONDS", "3600"))  # 会话过期时间（秒）
+
+# Redis配置（当 SESSION_STORAGE_TYPE = "redis" 时使用）
+REDIS_HOST: str = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT: int = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_DB: int = int(os.getenv("REDIS_DB", "0"))
+REDIS_PASSWORD: Optional[str] = os.getenv("REDIS_PASSWORD")
+
+# 数据存储配置
+DATA_DIR: str = os.getenv("DATA_DIR", os.path.join(os.getcwd(), "data"))  # 数据存储根目录
+
 # --- 获取本地Ollama模型列表 ---
 def get_ollama_models() -> List[Dict[str, str]]:
     """
@@ -146,6 +159,15 @@ def get_settings() -> Dict[str, Any]:
         "QWEN_API_KEY_FROM_ENV": QWEN_API_KEY_FROM_ENV,
         "QWEN_MODEL_NAME": QWEN_MODEL_NAME,
         
+        # 会话管理配置
+        "SESSION_STORAGE_TYPE": SESSION_STORAGE_TYPE,
+        "SESSION_EXPIRY_SECONDS": SESSION_EXPIRY_SECONDS,
+        "REDIS_HOST": REDIS_HOST,
+        "REDIS_PORT": REDIS_PORT,
+        "REDIS_DB": REDIS_DB,
+        "REDIS_PASSWORD": REDIS_PASSWORD,
+        "DATA_DIR": DATA_DIR,
+        
         # 其他应用配置
         "FEEDBACK_FILE": FEEDBACK_FILE,
     }
@@ -172,6 +194,7 @@ if __name__ == '__main__':
     print(f"Qwen/DashScope API Key Loaded (from DASHSCOPE_API_KEY or QWEN_API_KEY): {'Yes' if QWEN_API_KEY_FROM_ENV else 'No'}")
     print(f"Qwen Model Name: {QWEN_MODEL_NAME}")
     print(f"Active LLM Provider: {ACTIVE_LLM_PROVIDER}")
+    print(f"Session Storage Type: {SESSION_STORAGE_TYPE}")
     try:
         check_configurations()
         print("配置检查通过。")

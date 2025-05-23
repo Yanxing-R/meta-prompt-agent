@@ -2,6 +2,7 @@
 import logging
 import json
 import os
+from typing import List, Dict, Any, Optional, Tuple, Union
 
 from meta_prompt_agent.config import settings # 导入配置
 from meta_prompt_agent.config.settings import get_settings # 导入get_settings函数
@@ -13,6 +14,11 @@ from meta_prompt_agent.prompts.templates import (
     EXPLAIN_TERM_TEMPLATE
 )
 from meta_prompt_agent.core.llm import LLMClientFactory # 导入LLM工厂
+from meta_prompt_agent.core.session_manager import (
+    get_session_manager, 
+    PromptSession, 
+    SessionStage
+)
 
 logger = logging.getLogger(__name__)
 
@@ -152,99 +158,98 @@ async def generate_and_refine_prompt(
     structured_template_vars: dict = None, model_override: str = None,
     provider_override: str = None
 ) -> dict:
+    """
+    生成并优化提示词的单一API，向后兼容原有功能
+    
+    将使用分步交互式功能自动完成整个生成过程
+    """
     try:
         results = {
             "initial_core_prompt": "", "p1_initial_optimized_prompt": "",
             "evaluation_reports": [], "refined_prompts": [], "final_prompt": "",
             "error_message": None, "error_details": None,
         }
+        
         logger.info(f"开始处理任务类型 '{task_type}' 的请求: '{user_raw_request[:50]}...' (提供者: {provider_override or settings.ACTIVE_LLM_PROVIDER}, 模型: {model_override or '默认'})")
-        initial_core_prompt_for_llm = ""
-        if use_structured_template_name and structured_template_vars:
-            formatted_prompt_from_structure = load_and_format_structured_prompt(
-                use_structured_template_name, user_raw_request, structured_template_vars
-            )
-            if formatted_prompt_from_structure:
-                initial_core_prompt_for_llm = formatted_prompt_from_structure
-            else: 
-                logger.warning(f"结构化模板 '{use_structured_template_name}' 处理失败，回退。")
-                initial_core_prompt_for_llm = CORE_META_PROMPT_TEMPLATE.format(user_raw_request=user_raw_request)
-        else:
-            if task_type == "图像生成" and "BasicImageGen" in STRUCTURED_PROMPT_TEMPLATES:
-                 initial_core_prompt_for_llm = STRUCTURED_PROMPT_TEMPLATES["BasicImageGen"]["core_template_override"].format(user_raw_request=user_raw_request)
-            elif task_type == "代码生成" and "BasicCodeSnippet" in STRUCTURED_PROMPT_TEMPLATES:
-                initial_core_prompt_for_llm = CORE_META_PROMPT_TEMPLATE.format(user_raw_request=user_raw_request)
-            elif task_type == "视频生成" and "BasicVideoGen" in STRUCTURED_PROMPT_TEMPLATES:
-                initial_core_prompt_for_llm = STRUCTURED_PROMPT_TEMPLATES["BasicVideoGen"]["core_template_override"].format(user_raw_request=user_raw_request)
-            else:
-                initial_core_prompt_for_llm = CORE_META_PROMPT_TEMPLATE.format(user_raw_request=user_raw_request)
-        results["initial_core_prompt"] = initial_core_prompt_for_llm
-        conversation_history = []
-        p1, error = await invoke_llm(initial_core_prompt_for_llm, None, model_override, provider_override)
+        
+        # 创建交互式会话
+        session, error = await create_interactive_session(
+            user_raw_request=user_raw_request,
+            task_type=task_type,
+            model_override=model_override,
+            provider_override=provider_override,
+            template_name=use_structured_template_name,
+            template_variables=structured_template_vars,
+            max_recursion_depth=max_recursion_depth
+        )
+        
         if error:
-            error_msg_for_results = f"生成初始优化提示失败: {p1}"
-            logger.error(f"调用LLM生成初始提示失败。API返回: {p1}, 错误详情: {error}")
-            results["error_message"] = error_msg_for_results
+            logger.error(f"创建交互式会话失败: {error}")
+            results["error_message"] = f"创建交互式会话失败: {error.get('message', '')}"
             results["error_details"] = error
             return results
-        results["p1_initial_optimized_prompt"] = p1
-        conversation_history.append({"role": "user", "content": str(initial_core_prompt_for_llm)})
-        conversation_history.append({"role": "assistant", "content": str(p1)})
-        current_best_prompt = p1
-        logger.info(f"初步优化后的提示词 (P1):\n{current_best_prompt}")
-        if not enable_self_correction:
-            results["final_prompt"] = current_best_prompt
+        
+        # 生成P1提示词
+        session, error = await generate_p1_prompt_for_session(session.session_id)
+        if error:
+            logger.error(f"生成P1提示词失败: {error}")
+            results["error_message"] = f"生成P1提示词失败: {error.get('message', '')}"
+            results["error_details"] = error
             return results
+        
+        # 填充初始结果
+        results["initial_core_prompt"] = session.initial_core_prompt
+        results["p1_initial_optimized_prompt"] = session.p1_prompt
+        
+        # 如果不需要自我校正，直接返回结果
+        if not enable_self_correction:
+            results["final_prompt"] = session.p1_prompt
+            return results
+        
+        # 执行自我校正循环
         for i in range(max_recursion_depth):
-            logger.info(f"开始第 {i+1} 轮自我校正...")
-            eval_prompt_content = EVALUATION_META_PROMPT_TEMPLATE.format(
-                user_raw_request=user_raw_request, prompt_to_evaluate=current_best_prompt
-            )
-            evaluation_report_str, error = await invoke_llm(eval_prompt_content, [], model_override, provider_override) 
-            if error:
-                logger.warning(f"第 {i+1} 轮自我校正：生成评估报告失败。API返回: {evaluation_report_str}, 错误详情: {error}")
+            # 评估当前提示词
+            session, error = await evaluate_prompt_for_session(session.session_id)
+            if error and error.get("type") != "InvalidStage":
+                logger.warning(f"第 {i+1} 轮自我校正：评估提示词失败: {error}")
                 break
-            logger.info(f"原始评估报告字符串 (E{i+1}):\n{evaluation_report_str}")
-            parsed_evaluation_report = None
-            try:
-                cleaned_report_str = evaluation_report_str.strip()
-                if cleaned_report_str.startswith("```json"): cleaned_report_str = cleaned_report_str[7:]
-                if cleaned_report_str.endswith("```"): cleaned_report_str = cleaned_report_str[:-3]
-                cleaned_report_str = cleaned_report_str.strip()
-                parsed_evaluation_report = json.loads(cleaned_report_str)
-                results["evaluation_reports"].append(parsed_evaluation_report)
-                logger.info(f"成功解析评估报告 (E{i+1}) 为JSON。")
-            except json.JSONDecodeError as json_e:
-                logger.warning(f"无法将评估报告 (E{i+1}) 解析为JSON。错误: {json_e}. 使用原始字符串。")
-                results["evaluation_reports"].append(evaluation_report_str)
-            conversation_history.append({"role": "user", "content": str(eval_prompt_content)})
-            conversation_history.append({"role": "assistant", "content": str(evaluation_report_str)})
-            refinement_prompt_content = REFINEMENT_META_PROMPT_TEMPLATE.format(
-                user_raw_request=user_raw_request,
-                previous_prompt=current_best_prompt,
-                evaluation_report=evaluation_report_str 
-            )
-            refined_prompt, error = await invoke_llm(refinement_prompt_content, conversation_history, model_override, provider_override)
-            if error:
-                logger.warning(f"第 {i+1} 轮自我校正：生成精炼提示失败。API返回: {refined_prompt}, 错误详情: {error}")
+            
+            # 添加评估报告到结果
+            if session.evaluation_reports and i < len(session.evaluation_reports):
+                results["evaluation_reports"].append(session.evaluation_reports[i])
+            
+            # 优化当前提示词
+            session, error = await refine_prompt_for_session(session.session_id)
+            if error and error.get("type") not in ["InvalidStage", "MaxDepthReached"]:
+                logger.warning(f"第 {i+1} 轮自我校正：优化提示词失败: {error}")
                 break
-            logger.info(f"第 {i+1} 轮精炼后的提示词 (P{i+2}):\n{refined_prompt}")
-            results["refined_prompts"].append(refined_prompt)
-            if refined_prompt.strip() == current_best_prompt.strip():
-                 logger.info("精炼后的提示与上一版相同，停止递归。")
-                 break
-            current_best_prompt = refined_prompt
-            conversation_history.append({"role": "user", "content": str(refinement_prompt_content)})
-            conversation_history.append({"role": "assistant", "content": str(refined_prompt)})
-        results["final_prompt"] = current_best_prompt
+            
+            # 如果会话已完成，说明优化停止
+            if session.stage == SessionStage.COMPLETED:
+                logger.info(f"第 {i+1} 轮自我校正后优化完成")
+                break
+            
+            # 添加优化提示词到结果
+            if session.refined_prompts and i < len(session.refined_prompts):
+                results["refined_prompts"].append(session.refined_prompts[i])
+        
+        # 完成会话
+        session, error = await complete_session(session.session_id)
+        if error:
+            logger.warning(f"完成会话失败: {error}")
+        
+        # 设置最终提示词
+        results["final_prompt"] = session.final_prompt or session.current_prompt or session.p1_prompt
+        
         logger.info(f"成功生成最终提示。请求: '{user_raw_request[:50]}...'")
         return results
+    
     except Exception as e: 
         logger.exception(f"在 generate_and_refine_prompt 处理过程中发生未捕获的严重错误。请求: '{user_raw_request[:50]}...'")
         return {
             "initial_core_prompt": "", "p1_initial_optimized_prompt": "",
             "evaluation_reports": [], "refined_prompts": [], "final_prompt": "",
-            "error_message": "处理请求时发生内部错误，请稍后再试或联系管理员。",
+            "error_message": f"未捕获的严重错误: {str(e)}",
             "error_details": {"type": "UnhandledException", "exception_type": e.__class__.__name__, "message": str(e)},
         }
 
@@ -311,3 +316,446 @@ def save_feedback(all_feedback_data: list) -> bool:
     except Exception as e:
         logger.exception(f"保存反馈数据到 '{settings.FEEDBACK_FILE}' 时发生未知错误。")
         return False
+
+# --- 分步交互式提示词生成函数 ---
+async def create_interactive_session(
+    user_raw_request: str, 
+    task_type: str,
+    model_override: str = None, 
+    provider_override: str = None,
+    template_name: str = None,
+    template_variables: Dict[str, Any] = None,
+    max_recursion_depth: int = 3
+) -> Tuple[PromptSession, Optional[Dict[str, Any]]]:
+    """
+    创建交互式提示词生成会话
+    
+    Args:
+        user_raw_request: 用户原始请求
+        task_type: 任务类型
+        model_override: 可选的模型覆盖
+        provider_override: 可选的提供商覆盖
+        template_name: 结构化模板名称
+        template_variables: 模板变量
+        max_recursion_depth: 最大递归深度
+        
+    Returns:
+        Tuple[PromptSession, Optional[Dict[str, Any]]]: (会话对象, 错误信息)
+    """
+    try:
+        # 获取会话管理器
+        session_manager = get_session_manager()
+        
+        # 创建新会话
+        session = await session_manager.create_session(
+            user_raw_request=user_raw_request,
+            task_type=task_type,
+            model_override=model_override,
+            provider_override=provider_override,
+            template_name=template_name,
+            template_variables=template_variables
+        )
+        
+        # 设置最大递归深度
+        session.max_recursion_depth = max_recursion_depth
+        
+        # 保存会话
+        await session_manager.save_session(session)
+        
+        logger.info(f"成功创建交互式会话 {session.session_id}")
+        return session, None
+    except Exception as e:
+        error_msg = f"创建交互式会话失败: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return None, {"type": "SessionCreationError", "message": error_msg}
+
+async def generate_p1_prompt_for_session(session_id: str) -> Tuple[PromptSession, Optional[Dict[str, Any]]]:
+    """
+    为指定会话生成初步提示词 (P1)
+    
+    Args:
+        session_id: 会话ID
+        
+    Returns:
+        Tuple[PromptSession, Optional[Dict[str, Any]]]: (会话对象, 错误信息)
+    """
+    # 获取会话管理器和会话对象
+    session_manager = get_session_manager()
+    session = await session_manager.get_session(session_id)
+    
+    if not session:
+        error_msg = f"会话 {session_id} 不存在"
+        logger.error(error_msg)
+        return None, {"type": "SessionNotFound", "message": error_msg}
+    
+    # 检查会话状态
+    if session.stage != SessionStage.CREATED:
+        error_msg = f"会话 {session_id} 已经生成过P1提示词，当前阶段: {session.stage}"
+        logger.warning(error_msg)
+        return session, {"type": "InvalidStage", "message": error_msg}
+    
+    try:
+        # 准备初始核心提示
+        initial_core_prompt_for_llm = ""
+        
+        # 使用结构化模板（如果指定）
+        if session.template_name and session.template_variables:
+            formatted_prompt_from_structure = load_and_format_structured_prompt(
+                session.template_name, session.user_raw_request, session.template_variables
+            )
+            if formatted_prompt_from_structure:
+                initial_core_prompt_for_llm = formatted_prompt_from_structure
+            else: 
+                logger.warning(f"结构化模板 '{session.template_name}' 处理失败，回退。")
+                initial_core_prompt_for_llm = CORE_META_PROMPT_TEMPLATE.format(user_raw_request=session.user_raw_request)
+        else:
+            # 根据任务类型选择不同的模板
+            if session.task_type == "图像生成" and "BasicImageGen" in STRUCTURED_PROMPT_TEMPLATES:
+                initial_core_prompt_for_llm = STRUCTURED_PROMPT_TEMPLATES["BasicImageGen"]["core_template_override"].format(user_raw_request=session.user_raw_request)
+            elif session.task_type == "代码生成" and "BasicCodeSnippet" in STRUCTURED_PROMPT_TEMPLATES:
+                initial_core_prompt_for_llm = STRUCTURED_PROMPT_TEMPLATES["BasicCodeSnippet"]["core_template_override"].format(user_raw_request=session.user_raw_request)
+            elif session.task_type == "视频生成" and "BasicVideoGen" in STRUCTURED_PROMPT_TEMPLATES:
+                initial_core_prompt_for_llm = STRUCTURED_PROMPT_TEMPLATES["BasicVideoGen"]["core_template_override"].format(user_raw_request=session.user_raw_request)
+            else:
+                initial_core_prompt_for_llm = CORE_META_PROMPT_TEMPLATE.format(user_raw_request=session.user_raw_request)
+        
+        # 保存初始核心提示
+        session.initial_core_prompt = initial_core_prompt_for_llm
+        
+        # 调用LLM生成P1提示词
+        p1, error = await invoke_llm(
+            initial_core_prompt_for_llm, 
+            None, 
+            session.model_override, 
+            session.provider_override
+        )
+        
+        if error:
+            session.record_error(f"生成初始优化提示失败: {p1}")
+            session.increment_retry("p1_generation")
+            await session_manager.save_session(session)
+            return session, {"type": "LLMError", "message": f"调用LLM生成初始提示失败: {p1}", "details": error}
+        
+        # 更新会话状态
+        session.p1_prompt = p1
+        session.current_prompt = p1
+        session.stage = SessionStage.P1_GENERATED
+        
+        # 添加到对话历史
+        session.add_to_history("user", initial_core_prompt_for_llm)
+        session.add_to_history("assistant", p1)
+        
+        # 保存会话
+        await session_manager.save_session(session)
+        
+        logger.info(f"会话 {session_id} 成功生成P1提示词")
+        return session, None
+    
+    except Exception as e:
+        error_msg = f"生成P1提示词失败: {str(e)}"
+        session.record_error(error_msg)
+        session.increment_retry("p1_generation")
+        await session_manager.save_session(session)
+        logger.error(error_msg, exc_info=True)
+        return session, {"type": "UnexpectedError", "message": error_msg}
+
+async def evaluate_prompt_for_session(session_id: str) -> Tuple[PromptSession, Optional[Dict[str, Any]]]:
+    """
+    为指定会话评估当前提示词
+    
+    Args:
+        session_id: 会话ID
+        
+    Returns:
+        Tuple[PromptSession, Optional[Dict[str, Any]]]: (会话对象, 错误信息)
+    """
+    # 获取会话管理器和会话对象
+    session_manager = get_session_manager()
+    session = await session_manager.get_session(session_id)
+    
+    if not session:
+        error_msg = f"会话 {session_id} 不存在"
+        logger.error(error_msg)
+        return None, {"type": "SessionNotFound", "message": error_msg}
+    
+    # 检查会话状态
+    valid_stages = [SessionStage.P1_GENERATED, SessionStage.REFINEMENT_COMPLETE]
+    if session.stage not in valid_stages:
+        error_msg = f"会话 {session_id} 当前阶段({session.stage})不允许进行评估，需要处于以下阶段之一: {valid_stages}"
+        logger.warning(error_msg)
+        return session, {"type": "InvalidStage", "message": error_msg}
+    
+    if not session.current_prompt:
+        error_msg = f"会话 {session_id} 没有可评估的当前提示词"
+        logger.error(error_msg)
+        return session, {"type": "MissingPrompt", "message": error_msg}
+    
+    try:
+        # 构建评估提示
+        eval_prompt_content = EVALUATION_META_PROMPT_TEMPLATE.format(
+            user_raw_request=session.user_raw_request, 
+            prompt_to_evaluate=session.current_prompt
+        )
+        
+        # 调用LLM获取评估报告
+        evaluation_report_str, error = await invoke_llm(
+            eval_prompt_content, 
+            session.conversation_history, 
+            session.model_override, 
+            session.provider_override
+        )
+        
+        if error:
+            session.record_error(f"生成评估报告失败: {evaluation_report_str}")
+            session.increment_retry("evaluation")
+            await session_manager.save_session(session)
+            return session, {"type": "LLMError", "message": f"调用LLM生成评估报告失败: {evaluation_report_str}", "details": error}
+        
+        # 尝试解析评估报告为JSON格式
+        parsed_evaluation_report = None
+        try:
+            cleaned_report_str = evaluation_report_str.strip()
+            # 处理可能的代码块包装
+            if cleaned_report_str.startswith("```json"): 
+                cleaned_report_str = cleaned_report_str[7:]
+            if cleaned_report_str.endswith("```"): 
+                cleaned_report_str = cleaned_report_str[:-3]
+            cleaned_report_str = cleaned_report_str.strip()
+            
+            parsed_evaluation_report = json.loads(cleaned_report_str)
+            logger.info(f"成功解析评估报告为JSON")
+        except json.JSONDecodeError as json_e:
+            logger.warning(f"无法将评估报告解析为JSON: {json_e}. 使用原始字符串。")
+            parsed_evaluation_report = evaluation_report_str
+        
+        # 更新会话状态
+        session.current_evaluation = parsed_evaluation_report
+        session.evaluation_reports.append(parsed_evaluation_report)
+        session.stage = SessionStage.EVALUATION_COMPLETE
+        
+        # 添加到对话历史
+        session.add_to_history("user", eval_prompt_content)
+        session.add_to_history("assistant", evaluation_report_str)
+        
+        # 保存会话
+        await session_manager.save_session(session)
+        
+        logger.info(f"会话 {session_id} 成功生成评估报告")
+        return session, None
+    
+    except Exception as e:
+        error_msg = f"评估提示词失败: {str(e)}"
+        session.record_error(error_msg)
+        session.increment_retry("evaluation")
+        await session_manager.save_session(session)
+        logger.error(error_msg, exc_info=True)
+        return session, {"type": "UnexpectedError", "message": error_msg}
+
+async def refine_prompt_for_session(session_id: str) -> Tuple[PromptSession, Optional[Dict[str, Any]]]:
+    """
+    为指定会话优化当前提示词
+    
+    Args:
+        session_id: 会话ID
+        
+    Returns:
+        Tuple[PromptSession, Optional[Dict[str, Any]]]: (会话对象, 错误信息)
+    """
+    # 获取会话管理器和会话对象
+    session_manager = get_session_manager()
+    session = await session_manager.get_session(session_id)
+    
+    if not session:
+        error_msg = f"会话 {session_id} 不存在"
+        logger.error(error_msg)
+        return None, {"type": "SessionNotFound", "message": error_msg}
+    
+    # 检查会话状态
+    if session.stage != SessionStage.EVALUATION_COMPLETE:
+        error_msg = f"会话 {session_id} 当前阶段({session.stage})不允许进行优化，需要先完成评估"
+        logger.warning(error_msg)
+        return session, {"type": "InvalidStage", "message": error_msg}
+    
+    # 检查递归深度
+    if session.current_recursion_depth >= session.max_recursion_depth:
+        session.stage = SessionStage.COMPLETED
+        session.final_prompt = session.current_prompt
+        await session_manager.save_session(session)
+        
+        message = f"会话 {session_id} 已达到最大递归深度 {session.max_recursion_depth}，停止优化"
+        logger.info(message)
+        return session, {"type": "MaxDepthReached", "message": message}
+    
+    try:
+        # 获取最近的评估报告
+        latest_evaluation = session.current_evaluation
+        evaluation_report_str = latest_evaluation
+        
+        # 如果评估报告是对象，转为字符串
+        if isinstance(latest_evaluation, dict):
+            try:
+                evaluation_report_str = json.dumps(latest_evaluation, ensure_ascii=False)
+            except:
+                evaluation_report_str = str(latest_evaluation)
+        
+        # 构建优化提示
+        refinement_prompt_content = REFINEMENT_META_PROMPT_TEMPLATE.format(
+            user_raw_request=session.user_raw_request,
+            previous_prompt=session.current_prompt,
+            evaluation_report=evaluation_report_str 
+        )
+        
+        # 调用LLM优化提示词
+        refined_prompt, error = await invoke_llm(
+            refinement_prompt_content, 
+            session.conversation_history, 
+            session.model_override, 
+            session.provider_override
+        )
+        
+        if error:
+            session.record_error(f"生成优化提示失败: {refined_prompt}")
+            session.increment_retry("refinement")
+            await session_manager.save_session(session)
+            return session, {"type": "LLMError", "message": f"调用LLM生成优化提示失败: {refined_prompt}", "details": error}
+        
+        # 检查优化提示是否与当前提示相同
+        if refined_prompt.strip() == session.current_prompt.strip():
+            logger.info(f"会话 {session_id} 优化后提示与当前提示相同，优化停止")
+            session.stage = SessionStage.COMPLETED
+            session.final_prompt = session.current_prompt
+        else:
+            # 更新会话状态
+            session.refined_prompts.append(refined_prompt)
+            session.current_prompt = refined_prompt
+            session.stage = SessionStage.REFINEMENT_COMPLETE
+            session.current_recursion_depth += 1
+        
+        # 添加到对话历史
+        session.add_to_history("user", refinement_prompt_content)
+        session.add_to_history("assistant", refined_prompt)
+        
+        # 保存会话
+        await session_manager.save_session(session)
+        
+        logger.info(f"会话 {session_id} 成功生成优化提示词，当前递归深度: {session.current_recursion_depth}")
+        return session, None
+    
+    except Exception as e:
+        error_msg = f"优化提示词失败: {str(e)}"
+        session.record_error(error_msg)
+        session.increment_retry("refinement")
+        await session_manager.save_session(session)
+        logger.error(error_msg, exc_info=True)
+        return session, {"type": "UnexpectedError", "message": error_msg}
+
+async def complete_session(session_id: str) -> Tuple[PromptSession, Optional[Dict[str, Any]]]:
+    """
+    完成会话，将当前提示词标记为最终提示词
+    
+    Args:
+        session_id: 会话ID
+        
+    Returns:
+        Tuple[PromptSession, Optional[Dict[str, Any]]]: (会话对象, 错误信息)
+    """
+    # 获取会话管理器和会话对象
+    session_manager = get_session_manager()
+    session = await session_manager.get_session(session_id)
+    
+    if not session:
+        error_msg = f"会话 {session_id} 不存在"
+        logger.error(error_msg)
+        return None, {"type": "SessionNotFound", "message": error_msg}
+    
+    # 检查是否有可完成的提示词
+    if not session.current_prompt:
+        error_msg = f"会话 {session_id} 没有可标记为最终的当前提示词"
+        logger.error(error_msg)
+        return session, {"type": "MissingPrompt", "message": error_msg}
+    
+    try:
+        # 更新会话状态
+        session.final_prompt = session.current_prompt
+        session.stage = SessionStage.COMPLETED
+        
+        # 保存会话
+        await session_manager.save_session(session)
+        
+        logger.info(f"会话 {session_id} 已完成，最终提示词已设置")
+        return session, None
+    
+    except Exception as e:
+        error_msg = f"完成会话失败: {str(e)}"
+        session.record_error(error_msg)
+        await session_manager.save_session(session)
+        logger.error(error_msg, exc_info=True)
+        return session, {"type": "UnexpectedError", "message": error_msg}
+
+async def update_prompt_by_user(
+    session_id: str, 
+    updated_prompt: str, 
+    stage: str = "current",
+    comments: str = None
+) -> Tuple[PromptSession, Optional[Dict[str, Any]]]:
+    """
+    用户修改会话中的提示词
+    
+    Args:
+        session_id: 会话ID
+        updated_prompt: 用户修改后的提示词
+        stage: 要修改的提示词阶段 ("p1", "current", "final")
+        comments: 用户对修改的说明
+        
+    Returns:
+        Tuple[PromptSession, Optional[Dict[str, Any]]]: (会话对象, 错误信息)
+    """
+    # 获取会话管理器和会话对象
+    session_manager = get_session_manager()
+    session = await session_manager.get_session(session_id)
+    
+    if not session:
+        error_msg = f"会话 {session_id} 不存在"
+        logger.error(error_msg)
+        return None, {"type": "SessionNotFound", "message": error_msg}
+    
+    try:
+        # 获取原始提示词
+        original_prompt = ""
+        
+        # 根据stage更新相应的提示词
+        if stage == "p1":
+            original_prompt = session.p1_prompt
+            session.p1_prompt = updated_prompt
+            session.current_prompt = updated_prompt
+            # 如果已经有评估或优化，返回到P1生成后的状态
+            session.stage = SessionStage.P1_GENERATED
+        elif stage == "current":
+            original_prompt = session.current_prompt
+            session.current_prompt = updated_prompt
+            # 状态保持不变，因为用户只是修改了当前提示词
+        elif stage == "final":
+            original_prompt = session.final_prompt or session.current_prompt
+            session.current_prompt = updated_prompt
+            session.final_prompt = updated_prompt
+            session.stage = SessionStage.COMPLETED
+        else:
+            error_msg = f"无效的提示词修改阶段: {stage}，支持的阶段: p1, current, final"
+            logger.warning(error_msg)
+            return session, {"type": "InvalidStage", "message": error_msg}
+        
+        # 记录用户修改
+        session.record_user_modification(stage, original_prompt, updated_prompt, comments)
+        
+        # 保存会话
+        await session_manager.save_session(session)
+        
+        logger.info(f"用户成功修改会话 {session_id} 的 {stage} 阶段提示词")
+        return session, None
+    
+    except Exception as e:
+        error_msg = f"用户修改提示词失败: {str(e)}"
+        session.record_error(error_msg)
+        await session_manager.save_session(session)
+        logger.error(error_msg, exc_info=True)
+        return session, {"type": "UnexpectedError", "message": error_msg}
