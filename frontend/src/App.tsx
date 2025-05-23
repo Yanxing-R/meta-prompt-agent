@@ -1915,10 +1915,14 @@ function App() {
     setIsLoading(true);
     
     try {
-      const response = await fetch(`/api/sessions/${id}/update`, {
+      const response = await fetch(`/api/sessions/${id}/user-update`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt })
+        body: JSON.stringify({ 
+          updated_prompt: prompt,
+          stage: "current",
+          comments: "用户手动编辑"
+        })
       });
       
       if (!response.ok) {
@@ -1926,12 +1930,17 @@ function App() {
         throw new Error(errorData.detail || `请求失败: ${response.status}`);
       }
       
-      const sessionData = await response.json() as SessionResponse;
+      const responseData = await response.json();
       
       // 更新会话状态
-      setSessionStage(sessionData.current_stage);
+      setSessionStage(responseData.stage);
       
-      return sessionData;
+      // 更新当前提示词
+      if (responseData.prompt) {
+        setOptimizedPrompt(responseData.prompt);
+      }
+      
+      return responseData;
     } catch (err) {
       setError(err instanceof Error ? err.message : '更新提示词时发生未知错误');
       console.error('更新提示词失败:', err);
