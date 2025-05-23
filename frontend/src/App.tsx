@@ -1563,6 +1563,11 @@ function App() {
   
   // 切换到自我校正与评估步骤视图
   const handleViewSteps = () => {
+    // 如果是交互模式，先设置processedSteps
+    if (interactiveMode && sessionData) {
+      const interactiveSteps = convertInteractiveSessionToSteps(sessionData);
+      setProcessedSteps(interactiveSteps);
+    }
     setShowStepsView(true);
   };
   
@@ -2837,6 +2842,55 @@ function App() {
     }
   };
   
+  // 处理交互模式的评估数据转换为ProcessedStep格式
+  const convertInteractiveSessionToSteps = (sessionData: SessionResponse | null): ProcessedStep[] => {
+    if (!sessionData || !sessionData.evaluation_report) {
+      return [];
+    }
+
+    // 构建单个评估步骤
+    const step: ProcessedStep = {
+      stepNumber: 1,
+      promptBeforeEvaluation: sessionData.p1_prompt || prompt || '',
+      evaluationReport: sessionData.evaluation_report,
+      promptAfterRefinement: sessionData.refined_prompt || sessionData.p1_prompt || '',
+      isExpanded: false
+    };
+
+    // 解析评估分数
+    try {
+      const { scoreDetails, overallScore, guidelines, suggestions } = parseEvaluationScores(sessionData.evaluation_report);
+      step.scoreDetails = scoreDetails;
+      step.overallScore = overallScore;
+      step.guidelines = guidelines;
+      step.suggestions = suggestions;
+    } catch (error) {
+      console.warn('解析交互模式评估数据时出错:', error);
+    }
+
+    return [step];
+  };
+
+  // 获取当前的ProcessedSteps - 支持交互模式和高级模式
+  const getCurrentProcessedSteps = (): ProcessedStep[] => {
+    if (interactiveMode && sessionData) {
+      return convertInteractiveSessionToSteps(sessionData);
+    }
+    return processedSteps;
+  };
+
+  // 检查是否可以查看评估
+  const canViewEvaluation = (): boolean => {
+    if (interactiveMode) {
+      // 交互模式：检查sessionData中是否有评估报告
+      return !!(sessionData?.evaluation_report) && 
+             (sessionStage === 'evaluation_complete' || sessionStage === 'refinement_complete');
+    } else {
+      // 高级模式：检查processedSteps
+      return advancedMode && processedSteps.length > 0;
+    }
+  };
+  
   return (
     <div className={`app ${themeStyle}`}>
       {/* 页面头部 */}
@@ -2988,7 +3042,7 @@ function App() {
               </button>
               
               <div className="result-actions">
-                {advancedMode && processedSteps.length > 0 && (
+                {canViewEvaluation() && (
                   <button
                     className="action-button"
                     onClick={handleViewSteps}
@@ -3151,7 +3205,7 @@ function App() {
                     {expandAllSteps ? "全部折叠" : "全部展开"}
                   </button>
                 </div>
-                {processedSteps.map((step, index) => renderIntermediateStep(step, index))}
+                {getCurrentProcessedSteps().map((step, index) => renderIntermediateStep(step, index))}
               </div>
             </div>
           </main>
