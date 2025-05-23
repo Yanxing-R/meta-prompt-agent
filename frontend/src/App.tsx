@@ -2,8 +2,14 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import './App.css'; 
 import thinkTwiceLogo from './assets/think-twice-logo.png';
-// 引入diff库 - 请确保先安装: npm install diff
 import * as Diff from 'diff';
+
+// 导入组件
+import Header from './components/layout/Header';
+import PromptInput from './pages/PromptInput';
+import PromptResult from './pages/PromptResult';
+import StepsView from './pages/StepsView';
+import SettingsPanel from './components/layout/SettingsPanel';
 
 // --- SVG Icon Components ---
 const CreativeSendIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" className="send-icon"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path></svg>);
@@ -28,6 +34,8 @@ const CodeIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" width="16" heigh
 const VideoIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>);
 const ChatbotIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>);
 const WritingIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"></path><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"></path><path d="M2 2l7.586 7.586"></path><circle cx="11" cy="11" r="2"></circle></svg>);
+const SelfCorrectionIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"></path><path d="M8 12l2 2 4-4"></path><path d="M16 7l-1.5 1.5M7.5 16.5L6 18"></path></svg>);
+const HelpIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>);
 
 // --- Type Definitions ---
 interface ModelOption { name: string; value: string; provider: string; group: string; id?: string; }
@@ -58,9 +66,45 @@ interface AdvancedPromptResponseAPI { // Matches backend Pydantic model
   message?: string;
 }
 
+// --- 交互式会话类型定义 ---
+interface SessionResponse {
+  session_id: string;
+  status: string;
+  current_stage: string;
+  raw_request: string;
+  task_type: string;
+  p1_prompt?: string;
+  evaluation_report?: any;
+  refined_prompt?: string;
+  message?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface SessionCreateRequest {
+  raw_request: string;
+  task_type: string;
+  model_info?: {
+    model: string;
+    provider: string;
+  };
+}
+
+interface UserPromptUpdate {
+  prompt: string;
+}
+
 // --- Constants ---
-const SPECIFIC_TASK_TYPES = [ { label: "研究", value: "深度研究", Icon: ResearchIcon }, { label: "图像", value: "图像生成", Icon: ImageIcon }, { label: "代码", value: "代码生成", Icon: CodeIcon }, { label: "视频", value: "视频生成", Icon: VideoIcon }, { label: "聊天", value: "聊天机器人", Icon: ChatbotIcon }, { label: "写作", value: "内容写作", Icon: WritingIcon }, ];
+const SPECIFIC_TASK_TYPES = [
+  { label: "研究", value: "深度研究", Icon: ResearchIcon },
+  { label: "图像", value: "图像生成", Icon: ImageIcon },
+  { label: "代码", value: "代码生成", Icon: CodeIcon },
+  { label: "视频", value: "视频生成", Icon: VideoIcon },
+  { label: "聊天", value: "聊天机器人", Icon: ChatbotIcon },
+  { label: "写作", value: "内容写作", Icon: WritingIcon },
+];
 const DEFAULT_TASK_TYPE = "通用/问答";
+const API_BASE_URL = ''; // 使用相对URL，与前端服务同源
 
 // --- ToggleSwitch Component ---
 const ToggleSwitch = ({ id, checked, onChange, label }: { id: string, checked: boolean, onChange: (checked: boolean) => void, label: string }) => ( <div className="toggle-switch-container"> <label htmlFor={id} className="toggle-switch-label">{label}</label> <label className="toggle-switch"> <input type="checkbox" id={id} checked={checked} onChange={(e) => onChange(e.target.checked)} /> <span className="slider round"></span> </label> </div> );
@@ -349,21 +393,54 @@ const parseEvaluationScores = (evaluationReport: any): {
   }
 };
 
-// 添加提示词清理函数
+// 进一步加强cleanPromptForCopy函数，确保<prompt_to_copy>标签处理优先级最高
 const cleanPromptForCopy = (prompt: string): string => {
   if (!prompt) return '';
   
   let cleaned = prompt;
+  console.log("cleanPromptForCopy: 处理原始内容长度", cleaned.length);
   
-  // 优先检查是否有 <prompt_to_copy> 标签
-  const promptToCopyMatch = cleaned.match(/<prompt_to_copy>([\s\S]*?)<\/prompt_to_copy>/);
+  // 尝试多种标签格式，提高容错性
+  // 首先尝试标准格式
+  let promptToCopyMatch = cleaned.match(/<prompt_to_copy>([\s\S]*?)<\/prompt_to_copy>/);
+  
+  // 如果没找到，尝试可能带有空格或换行的变体
+  if (!promptToCopyMatch) {
+    promptToCopyMatch = cleaned.match(/<prompt_to_copy>\s*([\s\S]*?)\s*<\/prompt_to_copy>/);
+  }
+  
+  // 如果仍然没找到，尝试大小写不敏感的匹配
+  if (!promptToCopyMatch) {
+    promptToCopyMatch = cleaned.match(/<[Pp][Rr][Oo][Mm][Pp][Tt]_[Tt][Oo]_[Cc][Oo][Pp][Yy]>([\s\S]*?)<\/[Pp][Rr][Oo][Mm][Pp][Tt]_[Tt][Oo]_[Cc][Oo][Pp][Yy]>/);
+  }
+  
   if (promptToCopyMatch && promptToCopyMatch[1]) {
-    // 如果有 <prompt_to_copy> 标签，直接提取其中的内容并返回
+    // 如果有 <prompt_to_copy> 标签，直接提取其中的内容并返回，不做其他处理
+    console.log("找到<prompt_to_copy>标签，提取内容长度：", promptToCopyMatch[1].trim().length);
     return promptToCopyMatch[1].trim();
   }
   
-  // 如果没有 <prompt_to_copy> 标签，继续原有的逻辑
+  // 检查原始内容是否包含标签字符串但正则没匹配成功（用于调试）
+  if (cleaned.includes("<prompt_to_copy>") && cleaned.includes("</prompt_to_copy>")) {
+    console.log("警告：文本中包含<prompt_to_copy>标签但正则表达式未能提取内容");
+  }
   
+  // 检查是否有 USER_COPY 标记
+  const startMarker = "<<USER_COPY_PROMPT_START>>";
+  const endMarker = "<<USER_COPY_PROMPT_END>>";
+  
+  // 检查是否包含标记
+  if (cleaned.includes(startMarker) && cleaned.includes(endMarker)) {
+    const startIndex = cleaned.indexOf(startMarker) + startMarker.length;
+    const endIndex = cleaned.indexOf(endMarker);
+    
+    // 如果标记位置有效，提取标记之间的内容
+    if (startIndex > -1 && endIndex > startIndex) {
+      return cleaned.substring(startIndex, endIndex).trim();
+    }
+  }
+  
+  // 如果没有特殊标记，使用原有逻辑
   // 1. 查找 ```markdown 标记位置
   const markdownStartMatch = cleaned.match(/```markdown\s*\n/i);
   if (markdownStartMatch && markdownStartMatch.index !== undefined) {
@@ -393,52 +470,52 @@ const cleanPromptForCopy = (prompt: string): string => {
     // 如果没有找到 ```markdown，则按原有方式处理
     // 移除Markdown代码块标记 (```json, ```markdown, ```text, ``` 等)
     cleaned = cleaned.replace(/^```(\w*\s*)?\n?/gm, '').replace(/\n?```$/gm, '');
-    
-  // 移除常见的LLM引导性/总结性短语
-  const phrasesToRemove = [
-    /^您现在是一个.*AI助手。您的任务是.*$/gim, // 角色设定
-    /^请严格按照以下.*原则和结构.*$/gim,     // 指令引导
-    /^请基于以上所有分析和要求.*$/gim,       // 最终指令
-    /^请确保输出的提示词本身就是可以直接喂给另一个AI服务使用的完整内容。$/gim,
-    /^请为目标AI明确以下要素：$/gim,
-    /^用户的初步请求如下：$/gim,
-    /^请为上述任务生成一个优化的目标提示词。$/gim,
-    /^\*\*您的JSON评估报告：\*\*$/gim,
-    /^\*\*待评估的目标提示词：\*\*$/gim,
-    /^\*\*原始用户请求：\*\*$/gim,
-    /^现在，请分析以下输入并生成您的JSON评估报告：$/gim,
-    /^请在此处开始您的JSON输出$/gim,
-    /^请在此处开始您的解释$/gim,
-    /^\*\*您的解释：\*\*$/gim,
-    /^\*\*该术语\/短语所在的上下文提示词：\*\*$/gim,
-    /^\*\*待解释的术语\/短语：\*\*$/gim,
-    /^请不要进行与术语解释无关的对话或提问。您的回答应该是直接的解释内容。$/gim,
-    /^希望这些信息对你有所帮助[！!]?$/gim,
-    /^如有[^]*疑问，[^]*提问[。.]?$/gim,
-    /^祝你[^]*顺利[！!]?$/gim,
-    /^Happy prompting[！!]?$/gim,
-    /^Good luck[！!]?$/gim,
-    /^以下是优化后的提示词：$/gim,
-    /^优化后的提示词如下：$/gim,
-    /^这是为您生成的优化提示：$/gim,
-    /^您可以将以下内容直接复制.*$/gim,
-    /^请将以下内容.*喂给另一个AI.*$/gim,
-    /直接喂给另一个AI/gim, // 移除这个特定短语
-    /^#\s*优化后的目标提示词\s*\(P\d+\):?/gim, // 移除 "# 优化后的目标提示词 (P2)" 等
-    /^P\d+\s*内容:/gim, // 移除 "P1内容:" 等
-    /^E\d+\s*内容:/gim, // 移除 "E1内容:" 等
-    /^\*\*角色\s*\(Role\/Persona\)\*\*:/gim, // 移除结构化提示的标签头
-    /^\*\*上下文\/背景\s*\(Context\/Background\)\*\*:/gim,
-    /^\*\*任务\/目标\s*\(Task\/Goal\)\*\*:/gim,
-    /^\*\*规则\/指令\s*\(Rules\/Instructions\)\*\*:/gim,
-    /^\*\*动作\s*\(Action\)\*\*:/gim,
-    /^\*\*交付成果\/输出格式\s*\(Deliverables\/Output Format\)\*\*:/gim,
-    // 移除更多可能的引导性短语
-    /^下面是为您生成的.*提示：$/gim,
-    /^这是优化后的版本：$/gim,
-    /^您可以尝试使用这个提示：$/gim,
-    /^已为您优化请求：$/gim,
-  ];
+  
+    // 移除常见的LLM引导性/总结性短语
+    const phrasesToRemove = [
+      /^您现在是一个.*AI助手。您的任务是.*$/gim, // 角色设定
+      /^请严格按照以下.*原则和结构.*$/gim,     // 指令引导
+      /^请基于以上所有分析和要求.*$/gim,       // 最终指令
+      /^请确保输出的提示词本身就是可以直接喂给另一个AI服务使用的完整内容。$/gim,
+      /^请为目标AI明确以下要素：$/gim,
+      /^用户的初步请求如下：$/gim,
+      /^请为上述任务生成一个优化的目标提示词。$/gim,
+      /^\*\*您的JSON评估报告：\*\*$/gim,
+      /^\*\*待评估的目标提示词：\*\*$/gim,
+      /^\*\*原始用户请求：\*\*$/gim,
+      /^现在，请分析以下输入并生成您的JSON评估报告：$/gim,
+      /^请在此处开始您的JSON输出$/gim,
+      /^请在此处开始您的解释$/gim,
+      /^\*\*您的解释：\*\*$/gim,
+      /^\*\*该术语\/短语所在的上下文提示词：\*\*$/gim,
+      /^\*\*待解释的术语\/短语：\*\*$/gim,
+      /^请不要进行与术语解释无关的对话或提问。您的回答应该是直接的解释内容。$/gim,
+      /^希望这些信息对你有所帮助[！!]?$/gim,
+      /^如有[^]*疑问，[^]*提问[。.]?$/gim,
+      /^祝你[^]*顺利[！!]?$/gim,
+      /^Happy prompting[！!]?$/gim,
+      /^Good luck[！!]?$/gim,
+      /^以下是优化后的提示词：$/gim,
+      /^优化后的提示词如下：$/gim,
+      /^这是为您生成的优化提示：$/gim,
+      /^您可以将以下内容直接复制.*$/gim,
+      /^请将以下内容.*喂给另一个AI.*$/gim,
+      /直接喂给另一个AI/gim, // 移除这个特定短语
+      /^#\s*优化后的目标提示词\s*\(P\d+\):?/gim, // 移除 "# 优化后的目标提示词 (P2)" 等
+      /^P\d+\s*内容:/gim, // 移除 "P1内容:" 等
+      /^E\d+\s*内容:/gim, // 移除 "E1内容:" 等
+      /^\*\*角色\s*\(Role\/Persona\)\*\*:/gim, // 移除结构化提示的标签头
+      /^\*\*上下文\/背景\s*\(Context\/Background\)\*\*:/gim,
+      /^\*\*任务\/目标\s*\(Task\/Goal\)\*\*:/gim,
+      /^\*\*规则\/指令\s*\(Rules\/Instructions\)\*\*:/gim,
+      /^\*\*动作\s*\(Action\)\*\*:/gim,
+      /^\*\*交付成果\/输出格式\s*\(Deliverables\/Output Format\)\*\*:/gim,
+      // 移除更多可能的引导性短语
+      /^下面是为您生成的.*提示：$/gim,
+      /^这是优化后的版本：$/gim,
+      /^您可以尝试使用这个提示：$/gim,
+      /^已为您优化请求：$/gim,
+    ];
 
     phrasesToRemove.forEach(phraseRegex => {
       cleaned = cleaned.replace(phraseRegex, '');
@@ -1062,55 +1139,106 @@ const ScoreCard = ({
 // 将SPECIFIC_TASK_TYPES从常量改为状态
 function App() {
   // --- State Variables ---
-  // 添加任务类型状态
-  const [taskTypes, setTaskTypes] = useState<TaskType[]>(SPECIFIC_TASK_TYPES.map(type => ({...type, isDropdownOpen: false})));
-  const [selectedTemplate, setSelectedTemplate] = useState<PromptTemplate | null>(null);
-  const [showTemplateDrawer, setShowTemplateDrawer] = useState<boolean>(false);
-  const [templateValues, setTemplateValues] = useState<{[key: string]: string}>({});
-  const [rawRequest, setRawRequest] = useState<string>('');
-  const [generatedPrompt, setGeneratedPrompt] = useState<string>('');
-  const [isLoading, setIsLoading] = useState<boolean>(false); 
-  const [error, setError] = useState<string | null>(null);   
-  const [showIntro, setShowIntro] = useState<boolean>(true); 
-  const [selectedTaskType, setSelectedTaskType] = useState<string | null>(SPECIFIC_TASK_TYPES[0].value); 
+  // 基本UI状态
+  const [themeStyle, setThemeStyle] = useState<ThemeStyle>('light');
   const [showSettings, setShowSettings] = useState<boolean>(false);
-  const [advancedMode, setAdvancedMode] = useState<boolean>(true);
-  const [selfCorrection, setSelfCorrection] = useState<boolean>(true);
-  const [recursionDepth, setRecursionDepth] = useState<number>(1);
-  const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [showSystemInfo, setShowSystemInfo] = useState<boolean>(false);
-  const [allModels, setAllModels] = useState<ModelOption[]>([]);
-  const [providers, setProviders] = useState<ProviderOption[]>([]);
-  const [modelsByProvider, setModelsByProvider] = useState<{[key: string]: ModelOption[]}>({});
-  const [selectedProvider, setSelectedProvider] = useState<string>("");
-  const [selectedModel, setSelectedModel] = useState<string>("default");
-  const [tooltipProvider, setTooltipProvider] = useState<string | null>(null);
+  const [showIntro, setShowIntro] = useState<boolean>(true);
   const [showResultSection, setShowResultSection] = useState<boolean>(false);
+  const settingsPanelRef = useRef<HTMLDivElement>(null);
+  
+  // 任务类型和模板状态
+  const [taskTypes, setTaskTypes] = useState<TaskType[]>(
+    SPECIFIC_TASK_TYPES.map(type => ({...type, isDropdownOpen: false}))
+  );
+  const [selectedTaskType, setSelectedTaskType] = useState<string | null>(SPECIFIC_TASK_TYPES[0].value);
+  const [showTemplateDrawer, setShowTemplateDrawer] = useState<boolean>(false);
+  const [selectedTemplate, setSelectedTemplate] = useState<PromptTemplate | null>(null);
+  const [templateValues, setTemplateValues] = useState<{[key: string]: string}>({});
+  
+  // 提示词输入和生成状态
+  const [prompt, setPrompt] = useState<string>('');
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showResultPage, setShowResultPage] = useState<boolean>(false);
+  const [optimizedPrompt, setOptimizedPrompt] = useState<string>('');
+  const [initialPrompt, setInitialPrompt] = useState<string>('');
+  const [processedSteps, setProcessedSteps] = useState<ProcessedStep[]>([]);
+  const [improvementNotes, setImprovementNotes] = useState<string | null>(null);
+  
+  // 用于解释术语的状态
   const [selectedText, setSelectedText] = useState<string>('');
   const [showTermExplainer, setShowTermExplainer] = useState<boolean>(false);
   const [termToExplain, setTermToExplain] = useState<string>('');
   const [termExplanation, setTermExplanation] = useState<string>('');
-  const [processedSteps, setProcessedSteps] = useState<ProcessedStep[]>([]);
-  const [expandAllSteps, setExpandAllSteps] = useState<boolean>(false);
-  const [showIntermediateSteps, setShowIntermediateSteps] = useState<boolean>(true);
-  const [showFeedback, setShowFeedback] = useState<boolean>(false);
+  
+  // 反馈相关状态
+  const [showFeedbackPopup, setShowFeedbackPopup] = useState<boolean>(false);
   const [feedbackRating, setFeedbackRating] = useState<number>(0);
   const [feedbackComment, setFeedbackComment] = useState<string>('');
   const [feedbackSubmitted, setFeedbackSubmitted] = useState<boolean>(false);
-  const [showResultPage, setShowResultPage] = useState<boolean>(false);
+  const [copySuccess, setCopySuccess] = useState<boolean>(false);
+  
+  // 页面视图状态
   const [showStepsView, setShowStepsView] = useState<boolean>(false);
-  const [initialPrompt, setInitialPrompt] = useState<string>('');
+  const [expandAllSteps, setExpandAllSteps] = useState<boolean>(false);
+  
+  // 差异比较状态
   const [comparisonMode, setComparisonMode] = useState<'side-by-side' | 'diff-highlight' | 'unified'>('side-by-side');
-  const [showFeedbackPopup, setShowFeedbackPopup] = useState<boolean>(false);
-  const [copiedToClipboard, setCopiedToClipboard] = useState<boolean>(false);
   const [selectedComparisonStep, setSelectedComparisonStep] = useState<number>(0);
-  const [sourcePrompt, setSourcePrompt] = useState<string>('');
-  const [targetPrompt, setTargetPrompt] = useState<string>('');
-  const [themeStyle, setThemeStyle] = useState<ThemeStyle>('light');
+  
+  // 高级模式状态
+  const [advancedMode, setAdvancedMode] = useState<boolean>(false);
+  const [selfCorrection, setSelfCorrection] = useState<boolean>(true);
+  const [recursionDepth, setRecursionDepth] = useState<number>(1);
+  
+  // 模型选择状态
+  const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
+  const [providers, setProviders] = useState<ProviderOption[]>([]);
+  const [allModels, setAllModels] = useState<ModelOption[]>([]);
+  const [modelsByProvider, setModelsByProvider] = useState<{[key: string]: ModelOption[]}>({});
+  const [selectedProvider, setSelectedProvider] = useState<string>('');
+  const [selectedModel, setSelectedModel] = useState<string>('default');
+  const [tooltipProvider, setTooltipProvider] = useState<string | null>(null);
+  
+  // 中止控制器
+  const abortControllerRef = useRef<AbortController | null>(null);
+  
+  // --- 交互式会话状态 ---
+  const [interactiveMode, setInteractiveMode] = useState<boolean>(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [sessionStage, setSessionStage] = useState<string | null>(null);
+  const [sessionData, setSessionData] = useState<SessionResponse | null>(null);
+  const [editMode, setEditMode] = useState<boolean>(true);
+  const [userEditedPrompt, setUserEditedPrompt] = useState<string>('');
 
   const resultSectionRef = useRef<HTMLDivElement>(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
-  const settingsPanelRef = useRef<HTMLDivElement>(null);
+
+  // 检测是否为PC设备
+  const [isDesktop, setIsDesktop] = useState(true); // 强制始终为桌面模式
+  
+  // 监听窗口大小变化
+  useEffect(() => {
+    const handleResize = () => {
+      // 无论窗口大小如何，始终设置为桌面设备
+      setIsDesktop(true);
+      document.body.classList.add('desktop-device');
+      document.body.classList.remove('mobile-device');
+    };
+    
+    handleResize(); // 页面加载时立即执行
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+  
+  // 确保应用正确的PC样式
+  useEffect(() => {
+    if (isDesktop) {
+      document.body.classList.add('desktop-device');
+    } else {
+      document.body.classList.remove('desktop-device');
+    }
+  }, [isDesktop]);
 
   // --- Helper Functions ---
   const getProviderDisplayName = useCallback((providerValue: string): string => {
@@ -1124,11 +1252,11 @@ function App() {
   
   // 添加主题变化时的效果
   useEffect(() => {
-    // 确保应用整体使用选定的主题
     document.body.className = `app-theme ${themeStyle}-theme`;
-    
-    // 存储主题选择到localStorage以便下次访问时恢复
     localStorage.setItem('thinkTwice-theme', themeStyle);
+    // 始终强制应用desktop-device类
+    document.body.classList.add('desktop-device');
+    document.body.classList.remove('mobile-device');
   }, [themeStyle]);
   
   // 初始化时从localStorage加载主题设置
@@ -1194,10 +1322,10 @@ function App() {
 
   // 防止界面变白：确保generatedPrompt存在或加载完成后显示结果区域
   useEffect(() => {
-    if (generatedPrompt || (!isLoading && error === null && !showIntro)) {
+    if (optimizedPrompt || (!isLoading && error === null && !showIntro)) {
       setShowResultSection(true);
     }
-  }, [generatedPrompt, isLoading, error, showIntro]);
+  }, [optimizedPrompt, isLoading, error, showIntro]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -1210,23 +1338,6 @@ function App() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showSettings]);
 
-  // 添加一个新的Effect来处理提示词比较选择变化
-  useEffect(() => {
-    if (showStepsView && processedSteps.length > 0) {
-      // 根据selectedComparisonStep确定源提示词和目标提示词
-      if (selectedComparisonStep === 0) {
-        // 初始提示词 vs 最终提示词
-        setSourcePrompt(initialPrompt);
-        setTargetPrompt(getDisplayPrompt(generatedPrompt));
-      } else if (selectedComparisonStep > 0 && selectedComparisonStep <= processedSteps.length) {
-        // 选择特定轮次比较
-        const stepIndex = selectedComparisonStep - 1;
-        setSourcePrompt(processedSteps[stepIndex].promptBeforeEvaluation);
-        setTargetPrompt(getDisplayPrompt(processedSteps[stepIndex].promptAfterRefinement));
-      }
-    }
-  }, [showStepsView, selectedComparisonStep, processedSteps, initialPrompt, generatedPrompt]);
-  
   // 当选择新模板时，重置模板值
   useEffect(() => {
     if (selectedTemplate) {
@@ -1254,8 +1365,16 @@ function App() {
 
   // --- Event Handlers ---
   const handleSubmit = async () => {
-    if (!rawRequest.trim()) { setError('请输入您的初步请求！'); setGeneratedPrompt(''); return; }
-    setIsLoading(true); setError(null); setGeneratedPrompt(''); setShowIntro(false); setProcessedSteps([]);
+    if (!prompt.trim()) { setError('请输入您的初步请求！'); setOptimizedPrompt(''); return; }
+    
+    // 如果选择了交互式模式，启动交互式会话
+    if (interactiveMode) {
+      await startInteractiveSession();
+      return;
+    }
+    
+    // 以下是原有的非交互式处理逻辑
+    setIsLoading(true); setError(null); setOptimizedPrompt(''); setShowIntro(false); setProcessedSteps([]);
     setShowStepsView(false); // 重置步骤视图状态
     const taskTypeToSend = selectedTaskType || DEFAULT_TASK_TYPE;
     abortControllerRef.current = new AbortController();
@@ -1273,14 +1392,14 @@ function App() {
       
       const requestBody = advancedMode
         ? { 
-            raw_request: rawRequest, 
+            raw_request: prompt, 
             task_type: taskTypeToSend, 
             enable_self_correction: selfCorrection, 
             max_recursion_depth: recursionDepth, 
             model_info: modelInfo
           }
         : { 
-            raw_request: rawRequest, 
+            raw_request: prompt, 
             task_type: taskTypeToSend, 
             model_info: modelInfo
           };
@@ -1298,7 +1417,7 @@ function App() {
         
         // 清理最终提示词，移除不必要的内容
         const finalPrompt = typeof advData.final_prompt === 'string' ? advData.final_prompt : '';
-        setGeneratedPrompt(finalPrompt);
+        setOptimizedPrompt(finalPrompt);
         
         // 保存初始提示用于对比
         const initialP = typeof advData.initial_prompt === 'string' ? advData.initial_prompt : '';
@@ -1378,8 +1497,8 @@ function App() {
       } else {
         const simpleData = data as SimplePromptResponse;
         const resultPrompt = typeof simpleData.p1_prompt === 'string' ? simpleData.p1_prompt : '';
-        setGeneratedPrompt(resultPrompt);
-        setInitialPrompt(rawRequest); // 简单模式下以原始请求作为对比内容
+        setOptimizedPrompt(resultPrompt);
+        setInitialPrompt(prompt); // 简单模式下以原始请求作为对比内容
         setShowResultSection(true);
         setShowResultPage(true);
       }
@@ -1387,7 +1506,7 @@ function App() {
     } catch (err) {
       if ((err as Error).name === 'AbortError') setError('请求已取消。');
       else setError(err instanceof Error ? err.message : '发生未知错误');
-      console.error('API调用失败:', err); setGeneratedPrompt('');
+      console.error('API调用失败:', err); setOptimizedPrompt('');
     } finally {
       if (!signal.aborted) setIsLoading(false);
       abortControllerRef.current = null; 
@@ -1399,11 +1518,11 @@ function App() {
   const handleKeyPress = (event: React.KeyboardEvent<HTMLTextAreaElement>) => { if (event.key === 'Enter' && !event.shiftKey && !isLoading) { event.preventDefault(); handleSubmit(); } };
   
   const handleExplainTerm = async () => {
-    if (!termToExplain || !generatedPrompt) { setError('请选择术语并确保已生成提示词'); return; }
+    if (!termToExplain || !optimizedPrompt) { setError('请选择术语并确保已生成提示词'); return; }
     setIsLoading(true); setTermExplanation(''); setError(null);
     try {
       const modelInfo = selectedModel !== "default" && selectedProvider ? { model: selectedModel, provider: selectedProvider } : undefined;
-      const response = await fetch('/api/explain-term', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ term_to_explain: termToExplain, context_prompt: generatedPrompt, model_info: modelInfo }) });
+      const response = await fetch('/api/explain-term', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ term_to_explain: termToExplain, context_prompt: optimizedPrompt, model_info: modelInfo }) });
       if (!response.ok) { const errorData = await response.json().catch(() => ({ detail: `HTTP错误: ${response.status}` })); throw new Error(errorData.detail || `请求失败: ${response.status}`); }
       const data = await response.json();
       setTermExplanation(data.explanation || '未能获取解释'); setShowTermExplainer(true);
@@ -1413,16 +1532,16 @@ function App() {
 
   const handleSubmitFeedback = async () => {
     if (feedbackRating === 0) { setError('请选择评分'); return; }
-    if (!generatedPrompt) { setError('没有可评价的提示词'); return; }
+    if (!optimizedPrompt) { setError('没有可评价的提示词'); return; }
     setIsLoading(true); setError(null);
     try {
       const modelIdentifier = selectedModel !== "default" && selectedProvider && allModels.find(m => m.value === selectedModel && m.provider === selectedProvider)
         ? selectedModel
         : (systemInfo?.model_name || "default_model");
-      const response = await fetch('/api/feedback/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt_id: Date.now().toString(), original_request: rawRequest, generated_prompt: generatedPrompt, rating: feedbackRating, comment: feedbackComment || undefined, model: modelIdentifier }) });
+      const response = await fetch('/api/feedback/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt_id: Date.now().toString(), original_request: prompt, generated_prompt: optimizedPrompt, rating: feedbackRating, comment: feedbackComment || undefined, model: modelIdentifier }) });
       if (!response.ok) { const errorData = await response.json(); throw new Error(errorData.detail || `请求失败: ${response.status}`); }
       setFeedbackSubmitted(true);
-      setTimeout(() => { setShowFeedback(false); setFeedbackSubmitted(false); setFeedbackRating(0); setFeedbackComment(''); }, 2000);
+      setTimeout(() => { setShowFeedbackPopup(false); setFeedbackSubmitted(false); setFeedbackRating(0); setFeedbackComment(''); }, 2000);
     } catch (err) { setError(err instanceof Error ? err.message : '提交反馈时发生未知错误');
     } finally { setIsLoading(false); }
   };
@@ -1452,12 +1571,45 @@ function App() {
     setShowStepsView(false);
   };
   
-  // 复制到剪贴板并显示提示
   const handleCopyToClipboard = () => {
-    const cleanedPrompt = cleanPromptForCopy(generatedPrompt);
-    navigator.clipboard.writeText(cleanedPrompt);
-    setCopiedToClipboard(true);
-    setTimeout(() => setCopiedToClipboard(false), 2000);
+    if (!optimizedPrompt) return;
+    
+    const textToCopy = cleanPromptForCopy(optimizedPrompt);
+    
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(textToCopy)
+        .then(() => {
+          setCopySuccess(true);
+          setTimeout(() => setCopySuccess(false), 2000);
+        })
+        .catch(err => {
+          console.error('无法复制到剪贴板:', err);
+          setError('复制失败，请手动复制');
+        });
+    } else {
+      // 回退方法
+      const textArea = document.createElement('textarea');
+      textArea.value = textToCopy;
+      textArea.style.position = 'fixed';
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      
+      try {
+        const successful = document.execCommand('copy');
+        if (successful) {
+          setCopySuccess(true);
+          setTimeout(() => setCopySuccess(false), 2000);
+        } else {
+          setError('复制失败，请手动复制');
+        }
+      } catch (err) {
+        console.error('无法复制到剪贴板:', err);
+        setError('复制失败，请手动复制');
+      }
+      
+      document.body.removeChild(textArea);
+    }
   };
   
   // 切换任务类型的下拉菜单
@@ -1503,7 +1655,7 @@ function App() {
     });
     
     // 将处理后的模板设置为原始请求
-    setRawRequest(processedTemplate);
+    setPrompt(processedTemplate);
     setShowTemplateDrawer(false);
   };
   
@@ -1515,9 +1667,444 @@ function App() {
     }));
   };
 
+  // --- 交互式会话API函数 ---
+  // 创建新的交互式会话
+  const createInteractiveSession = async () => {
+    if (!prompt.trim()) { 
+      setError('请输入您的初步请求！'); 
+      return null; 
+    }
+    setIsLoading(true);
+    setError(null);
+    setShowIntro(false);  // 确保介绍不再显示
+    setProcessedSteps([]); // 重置步骤
+    setShowStepsView(false); // 不显示步骤视图
+    
+    try {
+      const taskTypeToSend = selectedTaskType || DEFAULT_TASK_TYPE;
+      const modelInfo = selectedModel !== "default" && selectedProvider 
+        ? { model: selectedModel, provider: selectedProvider } 
+        : undefined;
+      
+      const response = await fetch('/api/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          raw_request: prompt,
+          task_type: taskTypeToSend,
+          model_info: modelInfo
+        })
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: `HTTP错误: ${response.status}` }));
+        throw new Error(errorData.detail || `请求失败: ${response.status}`);
+      }
+      
+      const sessionData = await response.json() as SessionResponse;
+      
+      // 更新会话状态
+      setSessionId(sessionData.session_id);
+      setSessionStage(sessionData.current_stage);
+      setInteractiveMode(true);
+      
+      return sessionData;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '创建会话时发生未知错误');
+      console.error('创建会话失败:', err);
+      return null;
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  
+  // 获取会话状态
+  const getSessionStatus = async (id: string) => {
+    setIsLoading(true);
+    
+    try {
+      const response = await fetch(`/api/sessions/${id}`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: `HTTP错误: ${response.status}` }));
+        throw new Error(errorData.detail || `请求失败: ${response.status}`);
+      }
+      
+      const sessionData = await response.json() as SessionResponse;
+      
+      // 更新会话状态
+      setSessionStage(sessionData.current_stage);
+      
+      return sessionData;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '获取会话状态时发生未知错误');
+      console.error('获取会话状态失败:', err);
+      return null;
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  
+  // 生成P1提示词
+  const generateP1Prompt = async (id: string) => {
+    setIsLoading(true);
+    console.log("开始生成P1提示词, 会话ID:", id);
+    
+    try {
+      const response = await fetch(`/api/sessions/${id}/generate-p1`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      
+      console.log("P1 API响应状态:", response.status);
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: `HTTP错误: ${response.status}` }));
+        throw new Error(errorData.detail || `请求失败: ${response.status}`);
+      }
+      
+      const sessionData = await response.json() as SessionResponse;
+      console.log("API返回的完整会话数据:", JSON.stringify(sessionData, null, 2));
+      console.log("成功获取会话数据，阶段:", sessionData.current_stage);
+      
+      // 更新会话状态
+      setSessionStage(sessionData.current_stage);
+      
+      // 强制设置页面跳转状态，不依赖于p1_prompt的存在
+      setShowResultSection(true);
+      setShowResultPage(true);
+      
+      // 检查多个可能的字段位置来获取提示词
+      let p1Content = '';
+      if (sessionData.p1_prompt) {
+        p1Content = sessionData.p1_prompt;
+        console.log("从p1_prompt字段获取到提示词，长度:", p1Content.length);
+      } else if (sessionData.refined_prompt) {
+        p1Content = sessionData.refined_prompt;
+        console.log("从refined_prompt字段获取到提示词，长度:", p1Content.length);
+      } else if (sessionData.message && typeof sessionData.message === 'string' && sessionData.message.length > 20) {
+        p1Content = sessionData.message;
+        console.log("从message字段获取到提示词，长度:", p1Content.length);
+      } else {
+        // 尝试直接检查整个对象，寻找可能包含提示词的字段
+        for (const [key, value] of Object.entries(sessionData)) {
+          if (typeof value === 'string' && value.length > 100 && key !== 'session_id' && key !== 'status') {
+            p1Content = value;
+            console.log(`从字段 ${key} 获取到可能的提示词，长度:`, p1Content.length);
+            break;
+          }
+        }
+      }
+      
+      if (p1Content) {
+        // 处理<prompt_to_copy>标签
+        const promptToCopyMatch = p1Content.match(/<prompt_to_copy>([\s\S]*?)<\/prompt_to_copy>/);
+        
+        // 优先使用标签内内容，如果没有则使用完整内容
+        let displayContent = p1Content;
+        
+        if (promptToCopyMatch && promptToCopyMatch[1]) {
+          // 提取标签内部内容
+          displayContent = promptToCopyMatch[1].trim();
+          console.log("找到<prompt_to_copy>标签，提取内容长度:", displayContent.length);
+        }
+        
+        // 保存完整内容到optimizedPrompt，显示内容到userEditedPrompt
+        setOptimizedPrompt(p1Content);
+        setUserEditedPrompt(displayContent); // 交互模式下只显示和编辑标签内容
+        console.log("成功设置提示词内容");
+        
+        // 设置初始提示用于对比
+        setInitialPrompt(prompt);
+      } else {
+        console.warn("警告：API返回的会话数据中未找到有效的提示词内容");
+        // 设置一个临时提示词
+        setOptimizedPrompt("正在生成提示词...");
+        setUserEditedPrompt("正在生成提示词...");
+        setInitialPrompt(prompt);
+        
+        // 如果没有找到提示词，启动轮询获取最新内容
+        console.log("启动轮询获取提示词内容");
+        setTimeout(() => pollSessionForPrompt(id), 1000);
+      }
+      
+      // 保存会话数据
+      setSessionData(sessionData);
+      
+      return sessionData;
+    } catch (err) {
+      console.error('生成P1提示词失败:', err);
+      setError(err instanceof Error ? err.message : '生成P1提示词时发生未知错误');
+      return null;
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  
+  // 评估提示词
+  const evaluatePrompt = async (id: string) => {
+    setIsLoading(true);
+    
+    try {
+      const response = await fetch(`/api/sessions/${id}/evaluate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: `HTTP错误: ${response.status}` }));
+        throw new Error(errorData.detail || `请求失败: ${response.status}`);
+      }
+      
+      const sessionData = await response.json() as SessionResponse;
+      
+      // 更新会话状态和评估报告
+      setSessionStage(sessionData.current_stage);
+      if (sessionData.evaluation_report) {
+        setSessionData(sessionData);
+      }
+      
+      return sessionData;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '评估提示词时发生未知错误');
+      console.error('评估提示词失败:', err);
+      return null;
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  
+  // 优化提示词
+  const refinePrompt = async (id: string) => {
+    setIsLoading(true);
+    
+    try {
+      const response = await fetch(`/api/sessions/${id}/refine`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: `HTTP错误: ${response.status}` }));
+        throw new Error(errorData.detail || `请求失败: ${response.status}`);
+      }
+      
+      const sessionData = await response.json() as SessionResponse;
+      
+      // 更新会话状态和优化后的提示词
+      setSessionStage(sessionData.current_stage);
+      if (sessionData.refined_prompt) {
+        setUserEditedPrompt(sessionData.refined_prompt); // 初始化用户编辑区
+      }
+      
+      return sessionData;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '优化提示词时发生未知错误');
+      console.error('优化提示词失败:', err);
+      return null;
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  
+  // 用户更新提示词
+  const updatePromptByUser = async (id: string, prompt: string) => {
+    setIsLoading(true);
+    
+    try {
+      const response = await fetch(`/api/sessions/${id}/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt })
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: `HTTP错误: ${response.status}` }));
+        throw new Error(errorData.detail || `请求失败: ${response.status}`);
+      }
+      
+      const sessionData = await response.json() as SessionResponse;
+      
+      // 更新会话状态
+      setSessionStage(sessionData.current_stage);
+      
+      return sessionData;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '更新提示词时发生未知错误');
+      console.error('更新提示词失败:', err);
+      return null;
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  
+  // 完成会话
+  const completeSession = async (id: string) => {
+    setIsLoading(true);
+    
+    try {
+      const response = await fetch(`/api/sessions/${id}/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: `HTTP错误: ${response.status}` }));
+        throw new Error(errorData.detail || `请求失败: ${response.status}`);
+      }
+      
+      const sessionData = await response.json() as SessionResponse;
+      
+      // 更新会话状态和最终提示词
+      setSessionStage(sessionData.current_stage);
+      
+      // 使用最终结果更新生成的提示词，以便与现有UI集成
+      if (sessionData.refined_prompt) {
+        setOptimizedPrompt(sessionData.refined_prompt);
+      } else if (sessionData.p1_prompt) {
+        setOptimizedPrompt(sessionData.p1_prompt);
+      }
+      
+      // 设置初始提示用于对比
+      setInitialPrompt(prompt);
+      
+      // 显示结果页面
+      setShowResultSection(true);
+      setShowResultPage(true);
+      setInteractiveMode(false);
+      
+      return sessionData;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '完成会话时发生未知错误');
+      console.error('完成会话失败:', err);
+      return null;
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  
+  // 启动交互式会话
+  const startInteractiveSession = async () => {
+    console.log("启动交互式会话流程");
+    // createInteractiveSession内部已经处理了加载状态和错误状态
+    const session = await createInteractiveSession();
+    console.log("创建会话结果:", !!session);
+    
+    if (session) {
+      // 成功创建会话后，自动开始生成P1提示词
+      console.log("开始调用generateP1Prompt，会话ID:", session.session_id);
+      try {
+        // 确保等待生成P1提示词完成
+        const result = await generateP1Prompt(session.session_id);
+        console.log("generateP1Prompt完成，结果:", !!result);
+        
+        // 检查是否需要额外轮询确保获取到提示词
+        if (result && (!result.p1_prompt || result.p1_prompt.length < 20)) {
+          console.log("启动额外轮询以确保获取到提示词");
+          setTimeout(() => pollSessionForPrompt(session.session_id), 2000);
+        }
+      } catch (err) {
+        console.error("generateP1Prompt发生错误:", err);
+        setError("生成提示词时发生错误，请重试");
+        
+        // 即使出错也尝试轮询获取提示词
+        setTimeout(() => pollSessionForPrompt(session.session_id), 2000);
+      }
+    }
+  };
+  
+  // 应用用户编辑并继续
+  const applyUserEditAndContinue = async () => {
+    if (!sessionId) return;
+    
+    // 准备用户编辑的内容
+    let updatedContent = userEditedPrompt;
+    
+    // 检查原始提示词是否包含<prompt_to_copy>标签
+    const originalHasTag = optimizedPrompt.includes('<prompt_to_copy>');
+    
+    // 如果原始提示词有标签但用户编辑的内容没有，则将用户编辑的内容包装在标签中
+    if (originalHasTag && !updatedContent.includes('<prompt_to_copy>')) {
+      // 提取原始提示词中标签前后的内容（如果有）
+      const beforeTagMatch = optimizedPrompt.match(/([\s\S]*?)<prompt_to_copy>[\s\S]*?<\/prompt_to_copy>/);
+      const afterTagMatch = optimizedPrompt.match(/<prompt_to_copy>[\s\S]*?<\/prompt_to_copy>([\s\S]*)/);
+      
+      const beforeTag = beforeTagMatch && beforeTagMatch[1] ? beforeTagMatch[1] : '';
+      const afterTag = afterTagMatch && afterTagMatch[1] ? afterTagMatch[1] : '';
+      
+      // 重新构建包含原始前缀和后缀的内容
+      updatedContent = `${beforeTag}<prompt_to_copy>${updatedContent}</prompt_to_copy>${afterTag}`;
+    }
+    
+    console.log("应用用户编辑，最终内容:", updatedContent);
+    
+    // 应用用户编辑
+    const updatedSession = await updatePromptByUser(sessionId, updatedContent);
+    if (!updatedSession) return;
+    
+    // 根据当前阶段决定下一步操作
+    if (sessionStage === 'p1_generated') {
+      // P1已生成，用户修改后进行评估
+      await evaluatePrompt(sessionId);
+    } else if (sessionStage === 'evaluated') {
+      // 评估已完成，用户修改后进行优化
+      await refinePrompt(sessionId);
+    } else if (sessionStage === 'refined') {
+      // 优化已完成，用户修改后完成会话
+      await completeSession(sessionId);
+    }
+  };
+  
+  // 切换到编辑模式
+  const toggleEditMode = () => {
+    setEditMode(!editMode);
+    if (!editMode) {
+      // 进入编辑模式时，初始化编辑内容
+      let initialContent = '';
+      
+      if (sessionStage === 'p1_generated' && sessionData?.p1_prompt) {
+        // 检查p1_prompt是否包含<prompt_to_copy>标签
+        const p1Match = sessionData.p1_prompt.match(/<prompt_to_copy>([\s\S]*?)<\/prompt_to_copy>/);
+        initialContent = p1Match ? p1Match[1].trim() : sessionData.p1_prompt;
+      } else if (sessionStage === 'evaluated' || sessionStage === 'refined') {
+        const refinedContent = sessionData?.refined_prompt || sessionData?.p1_prompt || '';
+        // 检查refined_prompt是否包含<prompt_to_copy>标签
+        const refinedMatch = refinedContent.match(/<prompt_to_copy>([\s\S]*?)<\/prompt_to_copy>/);
+        initialContent = refinedMatch ? refinedMatch[1].trim() : refinedContent;
+      } else if (interactiveMode && optimizedPrompt) {
+        // 处理直接从结果页面进入编辑模式的情况
+        // 检查optimizedPrompt是否包含<prompt_to_copy>标签
+        const optimizedMatch = optimizedPrompt.match(/<prompt_to_copy>([\s\S]*?)<\/prompt_to_copy>/);
+        initialContent = optimizedMatch ? optimizedMatch[1].trim() : optimizedPrompt;
+      }
+      
+      setUserEditedPrompt(initialContent);
+    }
+  };
+
   // --- Render Functions ---
   const renderModelSelectionUI = () => ( <> <div className="settings-section"> <h4 className="settings-section-title">模型选择</h4> <div className="settings-row"> <label htmlFor="provider-select">提供商:</label> <select id="provider-select" value={selectedProvider} onChange={(e) => { setSelectedProvider(e.target.value); setSelectedModel("default"); setTooltipProvider(null); }} className="settings-select"> <option value="" disabled>选择提供商</option> {providers.map((p) => (<option key={p.value} value={p.value}>{p.name}</option>))} </select> </div> {selectedProvider && (<> <div className="settings-row selected-provider-display-row"> <span className="selected-provider-name" onMouseEnter={() => setTooltipProvider(selectedProvider)} onMouseLeave={() => setTooltipProvider(null)}> 已选: {getProviderDisplayName(selectedProvider)} <InfoIcon size={14} /> {tooltipProvider === selectedProvider && modelsByProvider[selectedProvider] && ( <div className="provider-models-tooltip"> <strong>{getProviderDisplayName(selectedProvider)} 模型:</strong> <ul> {modelsByProvider[selectedProvider].length > 0 ? modelsByProvider[selectedProvider].map((model) => (<li key={model.value}>{model.name}</li>)) : <li>无可用模型</li>} </ul> </div> )} </span> </div> <div className="settings-row"> <label htmlFor="model-select">具体模型:</label> <select id="model-select" value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} className="settings-select" disabled={!modelsByProvider[selectedProvider] || modelsByProvider[selectedProvider].length === 0}> <option value="default">默认 ({getProviderDisplayName(selectedProvider)})</option> {modelsByProvider[selectedProvider]?.map((model) => (<option key={model.value} value={model.value}>{model.name}</option>))} </select> </div> </>)} </div> </> );
-  const renderAdvancedSettingsUI = () => ( <div className={`advanced-settings-content ${advancedMode ? 'open' : ''}`}> <ToggleSwitch id="self-correction-toggle" checked={selfCorrection} onChange={setSelfCorrection} label="启用自我校正" /> <div className="settings-row"> <label htmlFor="recursion-depth">最大递归深度:</label> <select id="recursion-depth" value={recursionDepth} onChange={(e) => setRecursionDepth(parseInt(e.target.value))} className="settings-select"> {[1, 2, 3].map(depth => (<option key={depth} value={depth}>{depth}</option>))} </select> </div> </div> );
+  const renderAdvancedSettingsUI = () => ( 
+    <div className={`advanced-settings-content ${advancedMode ? 'open' : ''}`}> 
+      <ToggleSwitch id="self-correction-toggle" checked={selfCorrection} onChange={setSelfCorrection} label="启用自我校正" /> 
+      <div className="settings-row"> 
+        <label htmlFor="recursion-depth">最大递归深度:</label> 
+        <select id="recursion-depth" value={recursionDepth} onChange={(e) => setRecursionDepth(parseInt(e.target.value))} className="settings-select"> 
+          {[1, 2, 3].map(depth => (<option key={depth} value={depth}>{depth}</option>))} 
+        </select> 
+      </div>
+      <div className="settings-divider"></div>
+      <ToggleSwitch id="interactive-mode-toggle" checked={interactiveMode} onChange={setInteractiveMode} label="分步交互模式" />
+      {interactiveMode && (
+        <div className="interactive-mode-info">
+          <p>启用分步交互模式后，您可以在提示词生成过程中参与修改和优化，使生成的提示词更符合您的需求。</p>
+        </div>
+      )}
+    </div> 
+  );
 
   const renderIntermediateStep = (step: ProcessedStep, index: number) => (
     <div key={index} className={`correction-step ${step.isExpanded ? 'expanded' : ''}`}>
@@ -1532,39 +2119,109 @@ function App() {
         <div className="step-details">
           {step.overallScore !== undefined && (
             <div className="evaluation-score-card">
-              {renderScoreCard(
-                step.scoreDetails || [], 
-                step.overallScore, 
-                step.guidelines, 
-                step.suggestions,
-                step.evaluationReport // 传递评估报告
-              )}
+              <ScoreCard
+                evaluationData={step.evaluationReport}
+                themeStyle={themeStyle}
+              />
             </div>
           )}
           <div className="step-comparison-grid">
-            <div className="step-content-block before">
-              <div className="label">优化前 (P{step.stepNumber}):</div>
-              <pre>{step.promptBeforeEvaluation || "N/A"}</pre>
-            </div>
-            <div className="step-content-block after">
-              <div className="label">优化后 (P{step.stepNumber + 1}):</div>
-              <pre>{getDisplayPrompt(step.promptAfterRefinement) || "N/A"}</pre>
-            </div>
+            
+            {showFeedbackPopup && (
+              <div className="feedback-popup-overlay">
+                <div className="feedback-popup">
+                  <div className="popup-header">
+                    <h4>您对生成的提示词满意吗？</h4>
+                    <button className="close-button" onClick={() => setShowFeedbackPopup(false)} title="关闭反馈"><XIcon/></button>
+                  </div>
+                  
+                  {feedbackSubmitted ? (
+                    <div className="feedback-success">感谢您的反馈！</div>
+                  ) : (
+                    <>
+                      <div className="rating-stars">
+                        {[1, 2, 3, 4, 5].map((rating) => (
+                          <button 
+                            key={rating} 
+                            className="star-button" 
+                            onClick={() => setFeedbackRating(rating)} 
+                            title={`${rating}星`}
+                          >
+                            {rating <= feedbackRating ? <StarFilledIcon /> : <StarIcon />}
+                          </button>
+                        ))}
+                      </div>
+                      <textarea 
+                        placeholder="您有什么建议或评论？（可选）" 
+                        value={feedbackComment} 
+                        onChange={(e) => setFeedbackComment(e.target.value)} 
+                        rows={3}
+                      ></textarea>
+                      <div className="popup-actions">
+                        <button 
+                          className="cancel-button" 
+                          onClick={() => setShowFeedbackPopup(false)}
+                        >
+                          取消
+                        </button>
+                        <button 
+                          className="submit-feedback-button primary-button" 
+                          onClick={handleSubmitFeedback} 
+                          disabled={feedbackRating === 0}
+                        >
+                          提交反馈
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
-          {step.evaluationReport && (
-            <div className="evaluation-report-step">
-              <div className="label">AI评估报告 (E{step.stepNumber}):</div>
-              <pre className="evaluation-content">
-                {typeof step.evaluationReport === 'string' ? step.evaluationReport : JSON.stringify(step.evaluationReport, null, 2)}
-              </pre>
-            </div>
-          )}
         </div>
       )}
     </div>
   );
 
-  // 渲染标签切换组件
+  const renderTaskTypeSelector = () => (
+    <div className="task-type-selector">
+      {taskTypes.map((type, index) => (
+        <div key={index} className="task-type-container">
+          <div className={`task-type-item ${selectedTaskType === type.value ? 'selected' : ''}`} onClick={() => handleTaskTypeSelect(type.value)}>
+          <type.Icon />
+          <span>{type.label}</span>
+            {/* 添加下拉箭头，在选中的任务类型上显示 */}
+            {selectedTaskType === type.value && (
+              <ChevronDownIcon 
+                className={`dropdown-arrow ${type.isDropdownOpen ? 'up' : ''}`}
+                onClick={(e) => {
+                  e.stopPropagation(); // 防止点击事件传播到任务类型项
+                  toggleTaskTypeDropdown(index);
+                }}
+              />
+            )}
+          </div>
+          
+          {/* 显示当前任务类型的模板下拉菜单 */}
+          {selectedTaskType === type.value && type.isDropdownOpen && (
+            <div className="template-dropdown">
+              {PROMPT_TEMPLATES.filter(template => template.taskType === type.value).map((template) => (
+                <div 
+                  key={template.id} 
+                  className="template-item"
+                  onClick={() => handleSelectTemplate(template)}
+                >
+                  <div className="template-item-name">{template.name}</div>
+                  <div className="template-item-description">{template.description}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+
   const renderTabSelector = () => (
     <div className="comparison-tabs">
       <button 
@@ -1587,69 +2244,7 @@ function App() {
       </button>
     </div>
   );
-  
-  // 渲染主题选择器
-  const renderThemeSelector = () => {
-    return (
-      <div className="theme-selector">
-        <label>主题风格：</label>
-        <div className="theme-buttons">
-          <button 
-            className={`theme-button ${themeStyle === 'light' ? 'active' : ''}`}
-            onClick={() => setThemeStyle('light')}
-            title="亮色主题"
-          >
-            亮色
-          </button>
-          <button 
-            className={`theme-button ${themeStyle === 'dark' ? 'active' : ''}`}
-            onClick={() => setThemeStyle('dark')}
-            title="暗色主题"
-          >
-            暗色
-          </button>
-          <button 
-            className={`theme-button ${themeStyle === 'cream' ? 'active' : ''}`}
-            onClick={() => setThemeStyle('cream')}
-            title="米色主题"
-          >
-            米色
-          </button>
-        </div>
-      </div>
-    );
-  };
-  
-  // 渲染评分卡片
-  const renderScoreCard = (
-    scoreDetails: { category: string; score: number; maxScore: number; comment?: string }[], 
-    overallScore: number,
-    guidelines?: string,
-    suggestions?: string,
-    evaluationReport?: any
-  ) => {
-    // 如果有原始JSON评估报告，优先使用它
-    if (evaluationReport) {
-      return <ScoreCard evaluationData={evaluationReport} themeStyle={themeStyle} />;
-    }
-    
-    // 向后兼容，使用旧结构
-    // 将旧格式转换为新格式
-    const transformedData = {
-      overall_score: overallScore,
-      criteria: scoreDetails.map(detail => ({
-        name: detail.category,
-        score: detail.score,
-        max_score: detail.maxScore,
-        comment: detail.comment || ''
-      })),
-      suggestions: suggestions || ''
-    };
-    
-    return <ScoreCard evaluationData={transformedData} themeStyle={themeStyle} />;
-  };
-  
-  // 渲染比较选择器
+
   const renderComparisonSelector = () => {
     const options = [
       { value: 0, label: "初始提示词 vs 最终提示词" },
@@ -1680,220 +2275,177 @@ function App() {
       </div>
     );
   };
-  
-  // 渲染差异高亮视图 - 更新使用源提示词和目标提示词
-  const renderDiffHighlight = () => {
-    // 使用diff库进行文本比较
-    const diffResult = Diff.diffWords(sourcePrompt, targetPrompt);
-    
-    return (
-      <div className="diff-highlight-view">
-        <h4>差异高亮视图</h4>
-        <pre className="highlighted-diff">
-          {diffResult.map((part, index) => (
-            <span 
-              key={index}
-              className={part.added ? 'added' : part.removed ? 'removed' : ''}
-            >
-              {part.value}
-            </span>
-          ))}
-        </pre>
-      </div>
-    );
-  };
-  
-  // 渲染合并视图 - 更新使用源提示词和目标提示词
-  const renderUnifiedView = () => {
-    // 使用行级别的比较进行合并视图
-    const diffLines = compareTexts(sourcePrompt, targetPrompt);
-    
-    return (
-      <div className="unified-view">
-        <h4>合并视图</h4>
-        <pre className="unified-diff">
-          {diffLines.map((line, index) => (
-            <div 
-              key={index} 
-              className={line[0].added ? 'line-added' : line[0].removed ? 'line-removed' : ''}
-            >
-              <span>
-                {line[0].added ? '+ ' : line[0].removed ? '- ' : '  '}
-              </span>
-              <span>
-                {line[0].value}
-              </span>
-            </div>
-          ))}
-        </pre>
-      </div>
-    );
-  };
-  
-  // 渲染提示词对比视图 - 更新使用源提示词和目标提示词
+
   const renderPromptComparison = () => {
-    switch(comparisonMode) {
+    // 确定源提示词和目标提示词
+    let sourceText = '';
+    let targetText = '';
+    
+    if (selectedComparisonStep === 0) {
+      // 初始提示词 vs 最终提示词
+      sourceText = initialPrompt || '';
+      
+      // 处理最终提示词中的<prompt_to_copy>标签
+      if (optimizedPrompt) {
+        const promptToCopyMatch = optimizedPrompt.match(/<prompt_to_copy>([\s\S]*?)<\/prompt_to_copy>/);
+        if (promptToCopyMatch && promptToCopyMatch[1]) {
+          // 只使用标签内部内容
+          targetText = promptToCopyMatch[1].trim();
+        } else {
+          targetText = optimizedPrompt;
+        }
+      }
+    } else if (selectedComparisonStep > 0 && selectedComparisonStep <= processedSteps.length) {
+      // 特定轮次比较
+      const stepIndex = selectedComparisonStep - 1;
+      sourceText = processedSteps[stepIndex].promptBeforeEvaluation || '';
+      
+      // 处理当前步骤优化后提示词中的<prompt_to_copy>标签
+      const refinedPrompt = processedSteps[stepIndex].promptAfterRefinement || '';
+      const promptToCopyMatch = refinedPrompt.match(/<prompt_to_copy>([\s\S]*?)<\/prompt_to_copy>/);
+      if (promptToCopyMatch && promptToCopyMatch[1]) {
+        // 只使用标签内部内容
+        targetText = promptToCopyMatch[1].trim();
+      } else {
+        targetText = refinedPrompt;
+      }
+    }
+    
+    switch (comparisonMode) {
       case 'side-by-side':
         return (
-          <div className="side-by-side-comparison">
-            <div className="comparison-column before">
-              <h4>{selectedComparisonStep === 0 ? "初始提示词" : `优化前 (第 ${selectedComparisonStep} 轮)`}</h4>
-              <pre>{sourcePrompt}</pre>
+          <div className="side-by-side-container">
+            <div className="prompt-side">
+              <h3>优化前</h3>
+              <pre>{sourceText}</pre>
             </div>
-            <div className="comparison-column after">
-              <h4>{selectedComparisonStep === 0 ? "最终优化提示词" : `优化后 (第 ${selectedComparisonStep} 轮)`}</h4>
-              <pre>{targetPrompt}</pre>
+            <div className="prompt-side">
+              <h3>优化后</h3>
+              <pre>{targetText}</pre>
             </div>
           </div>
         );
       case 'diff-highlight':
-        return renderDiffHighlight();
+        return (
+          <div className="diff-highlight-container">
+            {renderDiffHighlight(sourceText, targetText)}
+          </div>
+        );
       case 'unified':
-        return renderUnifiedView();
+        return (
+          <div className="unified-comparison-container">
+            {renderUnifiedComparison(sourceText, targetText)}
+          </div>
+        );
       default:
         return null;
     }
   };
-  
-  // 渲染模板列表
-  const renderTemplateList = (taskType: string) => {
-    const templates = PROMPT_TEMPLATES.filter(template => template.taskType === taskType);
-    
-    if (templates.length === 0) {
-      return <div className="empty-templates">暂无可用模板</div>;
-    }
 
-  return (
-      <div className="template-dropdown-menu">
-        {templates.map(template => (
-          <button 
-            key={template.id} 
-            className="template-item"
-            onClick={() => handleSelectTemplate(template)}
-          >
-            <div className="template-item-header">
-              <span className="template-name">{template.name}</span>
-      </div>
-            <div className="template-description">{template.description}</div>
-          </button>
+  const renderDiffHighlight = (oldText: string, newText: string) => {
+    const diff = Diff.diffWords(oldText, newText);
+    return (
+      <div className="diff-highlight-content">
+        {diff.map((part, index) => (
+          <span key={index} className={`diff-part ${part.added ? 'added' : part.removed ? 'removed' : ''}`}>
+            {part.value}
+          </span>
         ))}
       </div>
     );
   };
-  
-  // 渲染模板配置抽屉
-  const renderTemplateDrawer = () => {
-    if (!selectedTemplate) return null;
-    
-    // 提取模板中的所有占位符
-    const placeholders: string[] = [];
-    const regex = /\{\{([^}]+)\}\}/g;
-    let match;
-    // let templateText = selectedTemplate.template; // This variable is not used, can be removed
-    
-    while ((match = regex.exec(selectedTemplate.template)) !== null) {
-      if (!placeholders.includes(match[1])) {
-        placeholders.push(match[1]);
-      }
-    }
+
+  const renderUnifiedComparison = (oldText: string, newText: string) => {
+    // 使用compareTexts函数进行行级别的比较
+    const diffLines = compareTexts(oldText, newText);
     
     return (
-      <div className={`template-drawer ${showTemplateDrawer ? 'open' : ''}`}>
-        <div className="template-drawer-header">
-          <h3>配置模板: {selectedTemplate.name}</h3>
-          <button 
-            className="close-drawer-button" 
-            onClick={() => setShowTemplateDrawer(false)}
-            title="关闭"
+      <div className="unified-comparison-content">
+        {diffLines.map((line, index) => (
+          <div 
+            key={index} 
+            className={line[0].added ? 'line-added' : line[0].removed ? 'line-removed' : ''}
           >
-            <XIcon />
-          </button>
+            <span>
+              {line[0].added ? '+ ' : line[0].removed ? '- ' : '  '}
+            </span>
+            <span>
+              {line[0].value}
+            </span>
           </div>
-        
-        <div className="template-drawer-content">
-          <div className="template-description-full">
-            <p>{selectedTemplate.description}</p>
-          </div>
-          
-          <div className="template-placeholders">
-            <h4>填写模板参数</h4>
-            {placeholders.map(placeholder => (
-              <div key={placeholder} className="placeholder-input">
-                <label htmlFor={`placeholder-${placeholder}`}>{placeholder}:</label>
-                <input
-                  id={`placeholder-${placeholder}`}
-                  type="text"
-                  placeholder={`输入${placeholder}`}
-                  value={templateValues[placeholder] || ''}
-                  onChange={(e) => handleTemplateValueChange(placeholder, e.target.value)}
-                />
-              </div>
-            ))}
-          </div>
-          
-          <div className="template-preview">
-            <h4>模板预览</h4>
-            <pre className="template-preview-content">
-              {selectedTemplate.template.replace(/\{\{([^}]+)\}\}/g, (_match, placeholder) => 
-                templateValues[placeholder] ? templateValues[placeholder] : `{{${placeholder}}}`
-              )}
-            </pre>
-          </div>
-        </div>
-        
-        <div className="template-drawer-footer">
-              <button
-            className="cancel-button" 
-            onClick={() => setShowTemplateDrawer(false)}
-          >
-            取消
-          </button>
-          <button 
-            className="apply-template-button primary-button" 
-            onClick={applyTemplate}
-          >
-            应用模板
-          </button>
-        </div>
+        ))}
       </div>
     );
   };
-  
-  // 修改任务类型选择器渲染
-  const renderTaskTypeSelector = () => (
-    <div className="task-type-selector">
-      {taskTypes.map((task, index) => (
-        <div key={task.value} className="task-button-container">
-          <button
-                className={`task-type-button ${selectedTaskType === task.value ? 'active' : ''}`}
-            onClick={() => {
-              handleTaskTypeSelect(task.value);
-            }}
-                title={task.label}
-              >
-                <task.Icon /> 
-                <span className="task-button-label">{task.label}</span> 
-            {PROMPT_TEMPLATES.some(template => template.taskType === task.value) && (
-              <ChevronDownIcon 
-                className={`dropdown-arrow ${task.isDropdownOpen ? 'up' : ''}`} 
-                onClick={(e) => {
-                  e.stopPropagation(); // 阻止事件冒泡，防止触发按钮点击事件
-                  toggleTaskTypeDropdown(index);
-                }}
-              />
-            )}
-              </button>
-          
-          {task.isDropdownOpen && renderTemplateList(task.value)}
-        </div>
-            ))}
-          </div>
+
+  const getDisplayPrompt = (prompt: string) => {
+    if (!prompt) return '';
+    
+    // 检查是否有 <prompt_to_copy> 标签
+    const promptToCopyMatch = prompt.match(/<prompt_to_copy>([\s\S]*?)<\/prompt_to_copy>/);
+    if (promptToCopyMatch && promptToCopyMatch[1]) {
+      // 如果有标签，高亮显示这部分内容
+      return prompt.replace(
+        /<prompt_to_copy>([\s\S]*?)<\/prompt_to_copy>/g, 
+        '<span class="highlight-copy-section">$1</span>'
+      );
+    }
+    
+    // 检查是否有 USER_COPY 标记
+    const startMarker = "<<USER_COPY_PROMPT_START>>";
+    const endMarker = "<<USER_COPY_PROMPT_END>>";
+    
+    if (prompt.includes(startMarker) && prompt.includes(endMarker)) {
+      const startIndex = prompt.indexOf(startMarker);
+      const endIndex = prompt.indexOf(endMarker) + endMarker.length;
+      
+      // 如果标记位置有效，高亮显示标记之间的内容
+      if (startIndex > -1 && endIndex > startIndex) {
+        const before = prompt.substring(0, startIndex);
+        const marked = prompt.substring(startIndex, endIndex);
+        const after = prompt.substring(endIndex);
+        
+        const highlightedMarked = marked.replace(
+          startMarker, 
+          '<span class="copy-marker start-marker">' + startMarker + '</span>'
+        ).replace(
+          endMarker,
+          '<span class="copy-marker end-marker">' + endMarker + '</span>'
+        );
+        
+        const content = marked.substring(startMarker.length, marked.length - endMarker.length);
+        
+        return before + 
+          '<span class="copy-marker-wrapper">' + 
+          highlightedMarked.replace(
+            content,
+            '<span class="highlight-copy-section">' + content + '</span>'
+          ) + 
+          '</span>' + 
+          after;
+      }
+    }
+    
+    // 如果没有特殊标记，返回原始提示词
+    return prompt;
+  };
+
+  // 渲染交互式会话UI
+  const renderInteractiveSessionUI = () => (
+    <div className={`interactive-session-ui ${isDesktop ? 'desktop-mode' : ''} desktop-layout`}>
+      <div className={`interactive-floating-toolbar ${isDesktop ? 'desktop-mode' : ''} desktop-layout`}>
+        <button 
+          className={`interactive-action-button primary-button ${isDesktop ? 'desktop-mode' : ''} desktop-layout`}
+          onClick={applyUserEditAndContinue}
+          disabled={isLoading}
+        >
+          继续优化
+        </button>
+      </div>
+    </div>
   );
-  
-  // --- Main Render ---
-  
-  // 获取基于时间的欢迎语
-  const getTimeBasedGreeting = () => {
+
+  const renderTimeBasedGreeting = () => {
     const hour = new Date().getHours();
     if (hour < 6) {
       return "凌晨好";
@@ -1911,24 +2463,311 @@ function App() {
       return "夜深了";
     }
   };
-  
-  // 添加处理显示提示词的函数
-  const getDisplayPrompt = (prompt: string): string => {
-    if (!prompt) return '';
+
+  // 添加主题选择器渲染函数
+  const renderThemeSelector = () => {
+    return (
+      <div className="theme-selector">
+        <label>主题风格：</label>
+        <div className="theme-buttons">
+          <button 
+            className={`theme-button ${themeStyle === 'light' ? 'active' : ''}`}
+            onClick={() => setThemeStyle('light')}
+            title="亮色主题"
+          >
+            亮色
+          </button>
+          <button 
+            className={`theme-button ${themeStyle === 'dark' ? 'active' : ''}`}
+            onClick={() => setThemeStyle('dark')}
+            title="暗色主题"
+          >
+            暗色
+          </button>
+          <button 
+            className={`theme-button ${themeStyle === 'cream' ? 'active' : ''}`}
+            onClick={() => setThemeStyle('cream')}
+            title="米色主题"
+          >
+            米色
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  // 模板抽屉组件
+  const renderTemplateDrawer = () => {
+    if (!selectedTemplate) return null;
     
-    // 查找<prompt_to_copy>标签
-    const promptToCopyMatch = prompt.match(/<prompt_to_copy>([\s\S]*?)<\/prompt_to_copy>/);
-    if (promptToCopyMatch && promptToCopyMatch[1]) {
-      // 如果找到标签，只显示标签内的内容
-      return promptToCopyMatch[1].trim();
+    // 提取模板中的所有占位符
+    const placeholders: string[] = [];
+    const regex = /\{\{([^}]+)\}\}/g;
+    let match;
+    let templateText = selectedTemplate.template;
+    
+    while ((match = regex.exec(templateText)) !== null) {
+      if (!placeholders.includes(match[1])) {
+        placeholders.push(match[1]);
+      }
     }
     
-    // 如果没有找到标签，显示原始内容
-    return prompt;
+    return (
+      <div className="template-drawer-overlay" onClick={() => setShowTemplateDrawer(false)}>
+        <div className="template-drawer" onClick={(e) => e.stopPropagation()}>
+          <div className="template-drawer-header">
+            <h3>{selectedTemplate.name} 模板</h3>
+            <button className="close-button" onClick={() => setShowTemplateDrawer(false)} title="关闭模板编辑器">
+              <XIcon />
+            </button>
+          </div>
+          
+          <div className="template-drawer-description">
+            {selectedTemplate.description}
+          </div>
+          
+          <div className="template-variables">
+            <h4>填写模板变量:</h4>
+            {placeholders.map((placeholder) => (
+              <div key={placeholder} className="template-variable-item">
+                <label htmlFor={`var-${placeholder}`}>{placeholder}:</label>
+                <input
+                  id={`var-${placeholder}`}
+                  type="text"
+                  value={templateValues[placeholder] || ''}
+                  onChange={(e) => handleTemplateValueChange(placeholder, e.target.value)}
+                  placeholder={`输入${placeholder}的值...`}
+                />
+              </div>
+            ))}
+          </div>
+          
+          <div className="template-drawer-preview">
+            <h4>模板预览:</h4>
+                          <pre className="template-preview-content">
+                {(() => {
+                  let preview = selectedTemplate.template;
+                  Object.entries(templateValues).forEach(([placeholder, value]) => {
+                    const regex = new RegExp(`\\{\\{${placeholder}\\}\\}`, 'g');
+                    if (value) {
+                      // 有值时直接替换
+                      preview = preview.replace(regex, value);
+                    } else {
+                      // 无值时用高亮样式显示占位符
+                      preview = preview.replace(regex, `<span class="highlight-placeholder">{{${placeholder}}}</span>`);
+                    }
+                  });
+                  // 使用dangerouslySetInnerHTML来渲染HTML标签
+                  return <div dangerouslySetInnerHTML={{ __html: preview }} />;
+                })()}
+              </pre>
+          </div>
+          
+          <div className="template-drawer-actions">
+            <button 
+              className="cancel-button" 
+              onClick={() => setShowTemplateDrawer(false)}
+            >
+              取消
+            </button>
+            <button 
+              className="apply-template-button primary-button" 
+              onClick={applyTemplate}
+            >
+              应用模板
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // 添加调试效果
+  useEffect(() => {
+    console.log("调试状态变化 - showResultPage:", showResultPage);
+    console.log("调试状态变化 - showResultSection:", showResultSection);
+    console.log("调试状态变化 - optimizedPrompt长度:", optimizedPrompt?.length || 0);
+  }, [showResultPage, showResultSection, optimizedPrompt]);
+
+  // 轮询会话状态，获取最新提示词
+  const pollSessionForPrompt = async (id: string, maxAttempts = 5, delayMs = 2000) => {
+    console.log(`开始轮询会话状态，会话ID: ${id}, 最大尝试次数: ${maxAttempts}`);
+    
+    let attempts = 0;
+    
+    const poll = async () => {
+      attempts++;
+      console.log(`轮询尝试 ${attempts}/${maxAttempts}`);
+      
+      try {
+        const response = await fetch(`/api/sessions/${id}`, {
+          method: 'GET',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        
+        if (!response.ok) {
+          console.warn(`轮询失败，HTTP状态: ${response.status}`);
+          return false;
+        }
+        
+        const sessionData = await response.json() as SessionResponse;
+        console.log(`轮询返回的会话数据:`, sessionData);
+        
+        // 检查是否有提示词内容
+        let promptContent = '';
+        if (sessionData.p1_prompt && sessionData.p1_prompt.length > 20) {
+          console.log(`轮询成功，找到p1_prompt，长度: ${sessionData.p1_prompt.length}`);
+          promptContent = sessionData.p1_prompt;
+        } else if (sessionData.refined_prompt && sessionData.refined_prompt.length > 20) {
+          console.log(`轮询成功，找到refined_prompt，长度: ${sessionData.refined_prompt.length}`);
+          promptContent = sessionData.refined_prompt;
+        }
+        
+        if (promptContent) {
+          // 处理<prompt_to_copy>标签
+          const promptToCopyMatch = promptContent.match(/<prompt_to_copy>([\s\S]*?)<\/prompt_to_copy>/);
+          
+          // 保存完整提示词
+          setOptimizedPrompt(promptContent);
+          
+          // 优先显示标签内容
+          if (promptToCopyMatch && promptToCopyMatch[1]) {
+            setUserEditedPrompt(promptToCopyMatch[1].trim());
+            console.log(`找到并提取<prompt_to_copy>标签内容，长度: ${promptToCopyMatch[1].trim().length}`);
+          } else {
+            setUserEditedPrompt(promptContent);
+          }
+          
+          setSessionData(sessionData);
+          return true;
+        }
+        
+        console.log(`轮询未找到有效提示词，继续尝试...`);
+        return false;
+      } catch (err) {
+        console.error(`轮询出错:`, err);
+        return false;
+      }
+    };
+    
+    // 立即进行第一次轮询
+    let success = await poll();
+    
+    // 如果第一次失败且未达到最大尝试次数，则设置轮询间隔
+    while (!success && attempts < maxAttempts) {
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+      success = await poll();
+    }
+    
+    return success;
+  };
+
+  // 在交互模式下，初始化userEditedPrompt
+  useEffect(() => {
+    if (interactiveMode && optimizedPrompt && showResultPage) {
+      // 提取<prompt_to_copy>标签内的内容
+      const promptToCopyMatch = optimizedPrompt.match(/<prompt_to_copy>([\s\S]*?)<\/prompt_to_copy>/);
+      if (promptToCopyMatch && promptToCopyMatch[1]) {
+        setUserEditedPrompt(promptToCopyMatch[1].trim());
+      } else {
+        setUserEditedPrompt(optimizedPrompt);
+      }
+    }
+  }, [interactiveMode, optimizedPrompt, showResultPage]);
+
+  // 修改交互模式变化的副作用函数，在useEffect中
+  useEffect(() => {
+    // 每次交互模式变化时，重新应用设备类型
+    if (isDesktop) {
+      document.body.classList.add('desktop-device');
+    }
+    
+    // 确保在交互模式下也设置正确的设备类型
+    if (interactiveMode && isDesktop) {
+      document.body.classList.add('desktop-device');
+    }
+  }, [interactiveMode, isDesktop]);
+
+  // 添加组件挂载时的初始化，确保从一开始就应用正确的样式
+  useEffect(() => {
+    // 初始化时立即设置设备类型
+    const isDesktopDevice = window.innerWidth >= 992;
+    if (isDesktopDevice) {
+      document.body.classList.add('desktop-device');
+    }
+  }, []);
+
+  // 添加新的useEffect钩子，在交互模式变化时保持设备类型
+  useEffect(() => {
+    // 每次交互模式变化时，重新检查并应用设备类型
+    const isDesktopDevice = window.innerWidth >= 992;
+    if (isDesktopDevice) {
+      document.body.classList.add('desktop-device');
+    }
+    
+    // 在交互模式下特别应用交互模式相关类名
+    if (interactiveMode) {
+      // 使用setTimeout确保DOM已更新
+      setTimeout(() => {
+        document.querySelectorAll('.result-page').forEach(el => el.classList.add('interactive-mode'));
+        document.querySelectorAll('.result-content').forEach(el => el.classList.add('interactive-mode'));
+        document.querySelectorAll('.editable-prompt-textarea').forEach(el => el.classList.add('interactive-mode'));
+        document.querySelectorAll('.final-prompt-display').forEach(el => el.classList.add('interactive-mode'));
+      }, 0);
+    }
+  }, [interactiveMode]);
+
+  // 新增：用于调试 body 类名的 useEffect
+  useEffect(() => {
+    console.log(`[Debug] Body Class: ${document.body.className}, isDesktop: ${isDesktop}, interactiveMode: ${interactiveMode}`);
+  }, [isDesktop, interactiveMode]);
+
+  // 自我校正评估函数 - 对当前提示词进行独立评估
+  const handleSelfCorrectionEvaluation = async () => {
+    if (!optimizedPrompt && !userEditedPrompt) {
+      setError("没有可评估的提示词内容");
+      return;
+    }
+    
+    setIsLoading(true);
+    
+    try {
+      // 构建评估请求的数据
+      const promptToEvaluate = userEditedPrompt || optimizedPrompt;
+      
+      const response = await fetch('/api/prompt/evaluate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          raw_request: prompt,
+          prompt_to_evaluate: promptToEvaluate,
+          task_type: selectedTaskType || 'general'
+        })
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: `HTTP错误: ${response.status}` }));
+        throw new Error(errorData.detail || `评估失败: ${response.status}`);
+      }
+      
+      const evaluationResult = await response.json();
+      
+      // 显示评估结果，可以在控制台查看或添加到UI中
+      console.log('自我校正评估结果:', evaluationResult);
+      
+      // 如果有评估结果，可以显示一个成功消息
+      alert('自我校正评估完成！请查看控制台或评估报告。');
+      
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '自我校正评估时发生未知错误');
+      console.error('自我校正评估失败:', err);
+    } finally {
+      setIsLoading(false);
+    }
   };
   
   return (
-    <div className="app-container">
+    <div className={`app ${themeStyle}`}>
       {/* 页面头部 */}
       <header className="page-header">
         <div className="page-title">
@@ -1936,24 +2775,32 @@ function App() {
           <span className="page-title-text">Think Twice</span>
         </div>
         <div className="header-actions">
-          <button 
-            className="tool-button" 
-            title="设置" 
-            onClick={() => setShowSettings(!showSettings)}
-          >
-            <SettingsIcon />
-          </button>
-          <button 
-            className="tool-button" 
-            title="系统信息" 
-            onClick={() => setShowSystemInfo(true)}
-          >
+          <button className="tool-button" onClick={() => setShowSystemInfo(true)} title="系统信息">
             <InfoIcon />
+          </button>
+          <button className="tool-button" onClick={() => setShowIntro(true)} title="使用说明">
+            <HelpIcon />
+          </button>
+          <button className="tool-button" onClick={() => setShowSettings(!showSettings)} title="设置">
+            <SettingsIcon />
           </button>
         </div>
       </header>
       
-      <div ref={settingsPanelRef} className={`settings-panel ${showSettings ? 'open' : ''}`}> <div className="settings-panel-header"> <h3>应用设置</h3> <button className="close-panel-button" onClick={() => setShowSettings(false)} title="关闭设置"><XIcon/></button> </div> <div className="settings-panel-content"> <ToggleSwitch id="advanced-mode-toggle" checked={advancedMode} onChange={setAdvancedMode} label="高级模式" /> {advancedMode && renderAdvancedSettingsUI()} <hr className="settings-divider" /> {renderThemeSelector()} <hr className="settings-divider" /> {renderModelSelectionUI()} </div> </div>
+      <div ref={settingsPanelRef} className={`settings-panel ${showSettings ? 'open' : ''}`}> 
+        <div className="settings-panel-header"> 
+          <h3>应用设置</h3> 
+          <button className="close-panel-button" onClick={() => setShowSettings(false)} title="关闭设置"><XIcon/></button> 
+        </div> 
+        <div className="settings-panel-content"> 
+          <ToggleSwitch id="advanced-mode-toggle" checked={advancedMode} onChange={setAdvancedMode} label="高级模式" /> 
+          {advancedMode && renderAdvancedSettingsUI()} 
+          <hr className="settings-divider" /> 
+          {renderThemeSelector()} 
+          <hr className="settings-divider" /> 
+          {renderModelSelectionUI()} 
+        </div> 
+      </div>
       {showSystemInfo && systemInfo && ( 
         <div className="system-info-modal-overlay" onClick={() => setShowSystemInfo(false)}> 
           <div className="system-info-modal-content" onClick={(e) => e.stopPropagation()}> 
@@ -2012,195 +2859,230 @@ function App() {
           </div>
         </div>
       )}
-      {!showResultPage && (
+      {!showResultPage ? (
+        /* 输入页面 - 确保输入框在页面中央 */
         <main className="input-page">
           <div className="centered-content">
-            <h2 className="greeting-text">{getTimeBasedGreeting()}，欢迎使用 Think Twice</h2>
-        
+            <h2 className="greeting-text">{renderTimeBasedGreeting()}，欢迎使用 Think Twice</h2>
+            
             <section className="input-area-container card-style"> 
               {renderTaskTypeSelector()} 
-              <div className="main-input-wrapper"> 
-            <textarea
-              value={rawRequest}
-              onChange={(e) => setRawRequest(e.target.value)}
-              onKeyPress={handleKeyPress} 
-                  placeholder="在此输入您的初步想法或问题..." 
-              rows={4} 
-              disabled={isLoading}
-            />
-            <button 
-              className={`send-button ${isLoading ? 'loading' : ''}`} 
-              onClick={isLoading ? handleStop : handleSubmit} 
-              disabled={!isLoading && !rawRequest.trim()} 
-              title={isLoading ? "停止生成" : "优化提示"} 
-            >
-                  {isLoading ? <StopIcon /> : <CreativeSendIcon />} 
-            </button>
-          </div>
-              <div className="input-area-footer"> 
-                {advancedMode && <span className="mode-indicator-inline">高级模式已启用</span>} 
-                {selectedProvider && ( 
-                  <span className={`model-indicator-inline ${selectedProvider.toLowerCase()}`}> 
-                    模型: {selectedModel === "default" ? `默认 (${getProviderDisplayName(selectedProvider)})` : allModels.find(m=>m.value === selectedModel && m.provider === selectedProvider)?.name || selectedModel} 
-                  </span> 
-                )} 
-              </div> 
+              
+              <div className="prompt-input-container">
+                <div className="input-with-button">
+                  <textarea
+                    id="prompt-input"
+                    className="prompt-textarea"
+                    value={prompt}
+                    onChange={(e) => setPrompt(e.target.value)}
+                    placeholder="在此输入您的初步想法或问题..."
+                    onKeyPress={handleKeyPress}
+                    disabled={isLoading}
+                  />
+                  
+                  <button 
+                    className={`send-button ${isLoading ? 'loading' : ''}`} 
+                    onClick={isLoading ? handleStop : handleSubmit} 
+                    disabled={!isLoading && !prompt.trim()} 
+                    title={isLoading ? "停止生成" : "优化提示"} 
+                  >
+                    {isLoading ? <StopIcon /> : <CreativeSendIcon />} 
+                  </button>
+                </div>
+                
+                <div className="input-area-footer"> 
+                  {advancedMode && <span className="mode-indicator-inline">高级模式已启用</span>} 
+                  {interactiveMode && <span className="mode-indicator-inline interactive">交互式模式已启用</span>}
+                  {selectedProvider && ( 
+                    <span className={`model-indicator-inline ${selectedProvider.toLowerCase()}`}> 
+                      模型: {selectedModel === "default" ? `默认 (${getProviderDisplayName(selectedProvider)})` : allModels.find(m=>m.value === selectedModel && m.provider === selectedProvider)?.name || selectedModel} 
+                    </span> 
+                  )} 
+                </div> 
+              </div>
+              
+              {error && <p className="error-message card-style">{error}</p>}
             </section>
-        </div>
-
-          {error && <p className="error-message card-style">{error}</p>}
-        </main>
-      )}
-      
-      {/* 添加模板配置抽屉 */}
-      {renderTemplateDrawer()}
-      
-      {showResultPage && generatedPrompt && !showStepsView && (
-        <main className="result-page">
-          <div className="result-header">
-            <button className="back-button" onClick={handleBackToInput} title="返回">
-              <ArrowLeftIcon />
-              <span>返回</span>
-            </button>
-            
-            <div className="result-actions">
-              {advancedMode && processedSteps.length > 0 && (
-                <button 
-                  className="action-button steps-button" 
-                  onClick={handleViewSteps}
-                  title="查看自我校正与评估步骤"
+          </div>
+      </main>
+      ) : (
+        /* 结果页面 - 显示优化后的提示词和操作按钮 */
+        !showStepsView ? (
+          <main className={`result-page ${interactiveMode ? 'interactive-mode' : ''}`}>
+            <div className={`result-content ${interactiveMode ? 'interactive-mode' : ''}`}>
+            <div className="result-header">
+              <button className="back-button" onClick={handleBackToInput} title="返回">
+                <ArrowLeftIcon />
+                <span>返回</span>
+              </button>
+              
+              <div className="result-actions">
+                {advancedMode && processedSteps.length > 0 && (
+                  <button
+                    className="action-button"
+                    onClick={handleViewSteps}
+                    title="查看自我校正与评估步骤"
+                  >
+                    <CompareIcon />
+                    <span>查看评估</span>
+                  </button>
+                )}
+                
+                <button
+                  className="action-button"
+                  onClick={handleCopyToClipboard}
+                  title="复制优化后的提示词"
                 >
-                  <CompareIcon />
-                  <span>自我校正与评估</span>
+                  <CopyIcon />
+                  <span>复制提示词</span>
                 </button>
+                
+                <button
+                  className="action-button"
+                  onClick={() => setShowFeedbackPopup(true)}
+                  title="提供反馈评分"
+                >
+                  <StarIcon />
+                  <span>评分反馈</span>
+                </button>
+              </div>
+            </div>
+            
+              <div className={`prompt-display-area`}> {/* Changed class and removed layout class */}
+              <h3>优化后的提示词:</h3>
+                {interactiveMode ? (
+                  <textarea
+                    className={`editable-prompt-textarea final-prompt-display ${interactiveMode ? 'interactive-mode' : ''}`}
+                    value={userEditedPrompt}
+                    onChange={(e) => setUserEditedPrompt(e.target.value)}
+                    placeholder="编辑提示词..."
+                  />
+                ) : (
+                  <pre className={`final-prompt-display ${interactiveMode ? 'interactive-mode' : ''}`}>
+                    {(() => {
+                      const promptToCopyMatch = optimizedPrompt.match(/<prompt_to_copy>([\s\S]*?)<\/prompt_to_copy>/);
+                      if (promptToCopyMatch && promptToCopyMatch[1]) {
+                        return promptToCopyMatch[1].trim();
+                      }
+                      return optimizedPrompt;
+                    })()}
+                  </pre>
+                )}
+              
+              {/* 展示反馈表单和其他内容... */}
+              {showTermExplainer && termExplanation && (
+                <div className="term-explainer card-style inset">
+                  <div className="card-header">
+                    <h4>"{termToExplain}" 的解释:</h4>
+                    <button className="close-button" onClick={() => setShowTermExplainer(false)} title="关闭解释"><XIcon/></button>
+                  </div>
+                  <p>{termExplanation}</p>
+                </div>
               )}
               
-              <button 
-                className="action-button copy-button" 
-                onClick={handleCopyToClipboard}
-                title="复制到剪贴板"
-              >
-                <CopyIcon />
-                <span>复制提示词</span>
-                {copiedToClipboard && <span className="copy-tooltip">已复制!</span>}
+              {showFeedbackPopup && (
+                <div className="feedback-popup-overlay">
+                  <div className="feedback-popup">
+                    <div className="popup-header">
+                      <h4>您对生成的提示词满意吗？</h4>
+                      <button className="close-button" onClick={() => setShowFeedbackPopup(false)} title="关闭反馈"><XIcon/></button>
+                    </div>
+                    
+                    {feedbackSubmitted ? (
+                      <div className="feedback-success">感谢您的反馈！</div>
+                    ) : (
+                      <>
+                        <div className="rating-stars">
+                          {[1, 2, 3, 4, 5].map((rating) => (
+                            <button 
+                              key={rating} 
+                              className="star-button" 
+                              onClick={() => setFeedbackRating(rating)} 
+                              title={`${rating}星`}
+                            >
+                              {rating <= feedbackRating ? <StarFilledIcon /> : <StarIcon />}
+                            </button>
+                          ))}
+                        </div>
+                        <textarea 
+                          placeholder="您有什么建议或评论？（可选）" 
+                          value={feedbackComment} 
+                          onChange={(e) => setFeedbackComment(e.target.value)} 
+                          rows={3}
+                        ></textarea>
+                        <div className="popup-actions">
+                          <button 
+                            className="cancel-button" 
+                            onClick={() => setShowFeedbackPopup(false)}
+                          >
+                            取消
+                          </button>
+                          <button 
+                            className="submit-feedback-button primary-button" 
+                            onClick={handleSubmitFeedback} 
+                            disabled={feedbackRating === 0}
+                          >
+                            提交反馈
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+              </div>
+            </div>
+          </main>
+        ) : (
+          /* 步骤对比页面 */
+          <main className="steps-page">
+            <div className="result-header">
+              <button className="back-button" onClick={handleBackToResult} title="返回结果页面">
+                <ArrowLeftIcon />
+                <span>返回结果</span>
               </button>
               
-              <button 
-                className="action-button feedback-button" 
-                onClick={() => setShowFeedbackPopup(true)}
-                title="提供反馈"
-              >
-                <PenIcon />
-                <span>提供反馈</span>
-              </button>
+              <div className="view-actions">
+                {renderTabSelector()}
+              </div>
             </div>
-          </div>
-          
-          <div className="result-content">
-            <h3>优化后的提示:</h3>
-            <pre className="final-prompt-display">{getDisplayPrompt(generatedPrompt)}</pre>
             
-            {showTermExplainer && termExplanation && (
-              <div className="term-explainer card-style inset">
-                <div className="card-header">
-                  <h4>"{termToExplain}" 的解释:</h4>
-                  <button className="close-button" onClick={() => setShowTermExplainer(false)} title="关闭解释"><XIcon/></button>
+            <div className="steps-content">
+              {/* 添加比较选择器 */}
+              {renderComparisonSelector()}
+              
+              {/* 提示词对比视图 */}
+              <div className="prompt-comparison-view">
+                {renderPromptComparison()}
+              </div>
+              
+              {/* 评估步骤详情 */}
+              <div className="intermediate-steps-container">
+                <div className="intermediate-steps-header">
+                  <h4>详细评估步骤:</h4>
+                  <button className="tool-button toggle-all-steps-button" onClick={toggleAllStepsExpansion}>
+                    {expandAllSteps ? <MinimizeIcon /> : <MaximizeIcon />}
+                    {expandAllSteps ? "全部折叠" : "全部展开"}
+                  </button>
                 </div>
-                <p>{termExplanation}</p>
+                {processedSteps.map((step, index) => renderIntermediateStep(step, index))}
               </div>
-            )}
-            
-            {showFeedbackPopup && (
-              <div className="feedback-popup-overlay">
-                <div className="feedback-popup">
-                  <div className="popup-header">
-                    <h4>您对生成的提示词满意吗？</h4>
-                    <button className="close-button" onClick={() => setShowFeedbackPopup(false)} title="关闭反馈"><XIcon/></button>
-                  </div>
-                  
-                  {feedbackSubmitted ? (
-                    <div className="feedback-success">感谢您的反馈！</div>
-                  ) : (
-                    <>
-                      <div className="rating-stars">
-                        {[1, 2, 3, 4, 5].map((rating) => (
-                          <button 
-                            key={rating} 
-                            className="star-button" 
-                            onClick={() => setFeedbackRating(rating)} 
-                            title={`${rating}星`}
-                          >
-                            {rating <= feedbackRating ? <StarFilledIcon /> : <StarIcon />}
-                          </button>
-                        ))}
-                      </div>
-                      <textarea 
-                        placeholder="您有什么建议或评论？（可选）" 
-                        value={feedbackComment} 
-                        onChange={(e) => setFeedbackComment(e.target.value)} 
-                        rows={3}
-                      ></textarea>
-                      <div className="popup-actions">
-                        <button 
-                          className="cancel-button" 
-                          onClick={() => setShowFeedbackPopup(false)}
-                        >
-                          取消
-                        </button>
-                        <button 
-                          className="submit-feedback-button primary-button" 
-                          onClick={handleSubmitFeedback} 
-                          disabled={feedbackRating === 0}
-                        >
-                          提交反馈
-                        </button>
-                      </div>
-                    </>
-          )}
+            </div>
+          </main>
+        )
+      )}
+      
+      {/* 交互式会话UI - 只在结果页面显示，输入页面不显示 */}
+      {interactiveMode && sessionId && showResultPage && !showStepsView && (
+        <div className="interactive-session-ui">
+          {renderInteractiveSessionUI()}
         </div>
-      </div>
-            )}
-          </div>
-        </main>
       )}
       
-      {showResultPage && showStepsView && (
-        <main className="steps-page">
-          <div className="result-header">
-            <button className="back-button" onClick={handleBackToResult} title="返回结果页面">
-              <ArrowLeftIcon />
-              <span>返回结果</span>
-            </button>
-            
-            <div className="view-actions">
-              {renderTabSelector()}
-            </div>
-          </div>
-          
-          <div className="steps-content">
-            {/* 添加比较选择器 */}
-            {renderComparisonSelector()}
-            
-            {/* 提示词对比视图 */}
-            <div className="prompt-comparison-view">
-              {renderPromptComparison()}
-            </div>
-            
-            {/* 评估步骤详情 */}
-            <div className="intermediate-steps-container">
-              <div className="intermediate-steps-header">
-                <h4>详细评估步骤:</h4>
-                <button className="tool-button toggle-all-steps-button" onClick={toggleAllStepsExpansion}>
-                  {expandAllSteps ? <MinimizeIcon /> : <MaximizeIcon />}
-                  {expandAllSteps ? "全部折叠" : "全部展开"}
-                </button>
-              </div>
-              {processedSteps.map((step, index) => renderIntermediateStep(step, index))}
-            </div>
-          </div>
-        </main>
-      )}
+      {/* 模板配置抽屉 */}
+      {showTemplateDrawer && renderTemplateDrawer()}
       
+      {/* 修改加载中遮罩，避免覆盖停止按钮 */}
       {isLoading && (
         <div className="loading-overlay">
           <div className="loading-spinner"></div>

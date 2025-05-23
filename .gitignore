@@ -165,3 +165,5 @@ Thumbs.db
 # Optional: Conda environments (if you ever use them)
 # conda/
 # anaconda/
+
+start-app.bat
