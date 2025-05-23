@@ -1211,6 +1211,7 @@ function App() {
   const [sessionData, setSessionData] = useState<SessionResponse | null>(null);
   const [editMode, setEditMode] = useState<boolean>(true);
   const [userEditedPrompt, setUserEditedPrompt] = useState<string>('');
+  const [optimizationRound, setOptimizationRound] = useState<number>(1); // 新增：优化轮次计数器
 
   const resultSectionRef = useRef<HTMLDivElement>(null);
 
@@ -1684,6 +1685,7 @@ function App() {
     setShowIntro(false);  // 确保介绍不再显示
     setProcessedSteps([]); // 重置步骤
     setShowStepsView(false); // 不显示步骤视图
+    setOptimizationRound(1); // 重置优化轮次计数器
     
     try {
       const taskTypeToSend = selectedTaskType || DEFAULT_TASK_TYPE;
@@ -1819,7 +1821,7 @@ function App() {
         
         // 保存完整内容到optimizedPrompt，显示内容到userEditedPrompt
         setOptimizedPrompt(p1Content);
-        setUserEditedPrompt(displayContent); // 交互模式下只显示和编辑标签内容
+        setUserEditedPrompt(getDisplayPrompt(p1Content)); // 使用getDisplayPrompt清理内容
         console.log("成功设置提示词内容");
         
         // 设置初始提示用于对比
@@ -1952,7 +1954,7 @@ function App() {
         console.log("步骤2: 清理后的内容预览:", cleanedContent.substring(0, 200));
         
         console.log("步骤3: 更新 userEditedPrompt");
-        setUserEditedPrompt(cleanedContent);
+        setUserEditedPrompt(getDisplayPrompt(newPromptContent));
         
         console.log("=== 状态更新完成 ===");
         
@@ -2108,14 +2110,25 @@ function App() {
       return;
     }
     
+    // 防止重复点击
+    if (isLoading) {
+      console.log("操作正在进行中，忽略重复点击");
+      return;
+    }
+    
     // 直接使用用户编辑的内容，不进行标签包装
     const updatedContent = userEditedPrompt.trim();
     
     console.log("=== 开始应用用户编辑并继续 ===");
     console.log("会话ID:", sessionId);
     console.log("当前阶段:", sessionStage);
+    console.log("自我校正模式:", selfCorrection);
     console.log("用户编辑内容长度:", updatedContent.length);
     console.log("用户编辑内容预览:", updatedContent.substring(0, 100) + "...");
+    
+    // 设置loading状态
+    setIsLoading(true);
+    setError(null);
     
     try {
       // 应用用户编辑
@@ -2131,32 +2144,55 @@ function App() {
       setEditMode(false);
       console.log("已退出编辑模式");
       
-      // 根据当前阶段决定下一步操作
-      console.log("步骤2: 根据阶段决定下一步操作，当前阶段:", sessionStage);
-      
-      if (sessionStage === 'p1_generated') {
-        // P1已生成，用户修改后进行评估
-        console.log("执行评估提示词");
+      if (selfCorrection) {
+        // 自我校正模式：执行评估+优化的连续流程
+        console.log("步骤2: 自我校正模式 - 执行评估+优化连续流程");
+        
+        // 先执行评估
+        console.log("2a: 执行评估");
         const evalResult = await evaluatePrompt(sessionId);
-        console.log("评估结果:", !!evalResult);
-      } else if (sessionStage === 'evaluation_complete') {
-        // 评估已完成，用户修改后进行优化
-        console.log("执行优化提示词");
+        if (!evalResult) {
+          console.error("评估失败");
+          return;
+        }
+        console.log("评估成功完成");
+        
+        // 立即执行优化
+        console.log("2b: 执行优化");
         const refineResult = await refinePrompt(sessionId);
-        console.log("优化结果:", !!refineResult);
-      } else if (sessionStage === 'refinement_complete') {
-        // 优化已完成，用户修改后完成会话
-        console.log("执行完成会话");
-        const completeResult = await completeSession(sessionId);
-        console.log("完成结果:", !!completeResult);
+        if (!refineResult) {
+          console.error("优化失败");
+          return;
+        }
+        console.log("优化成功完成");
+        
+        // 更新优化轮次计数器
+        setOptimizationRound(prev => prev + 1);
+        console.log(`🔄 完成第${optimizationRound}轮自我校正优化`);
+        
       } else {
-        console.warn("未知的会话阶段:", sessionStage);
+        // 非自我校正模式：只执行评估并跳转到评估页面
+        console.log("步骤2: 非自我校正模式 - 只执行评估并跳转");
+        
+        const evalResult = await evaluatePrompt(sessionId);
+        if (!evalResult) {
+          console.error("评估失败");
+          return;
+        }
+        console.log("评估成功完成");
+        
+        // 跳转到评估页面
+        console.log("跳转到评估页面");
+        setShowStepsView(true);
       }
       
       console.log("=== 用户编辑应用流程完成 ===");
     } catch (err) {
       console.error("应用用户编辑过程中发生错误:", err);
       setError("应用编辑时发生错误: " + (err instanceof Error ? err.message : '未知错误'));
+    } finally {
+      // 确保加载状态被正确重置
+      setIsLoading(false);
     }
   };
   
@@ -2168,19 +2204,16 @@ function App() {
       let initialContent = '';
       
       if (sessionStage === 'p1_generated' && sessionData?.p1_prompt) {
-        // 检查p1_prompt是否包含<prompt_to_copy>标签
-        const p1Match = sessionData.p1_prompt.match(/<prompt_to_copy>([\s\S]*?)<\/prompt_to_copy>/);
-        initialContent = p1Match ? p1Match[1].trim() : sessionData.p1_prompt;
+        // 使用getDisplayPrompt确保内容被正确清理
+        initialContent = getDisplayPrompt(sessionData.p1_prompt);
       } else if (sessionStage === 'evaluated' || sessionStage === 'refined') {
         const refinedContent = sessionData?.refined_prompt || sessionData?.p1_prompt || '';
-        // 检查refined_prompt是否包含<prompt_to_copy>标签
-        const refinedMatch = refinedContent.match(/<prompt_to_copy>([\s\S]*?)<\/prompt_to_copy>/);
-        initialContent = refinedMatch ? refinedMatch[1].trim() : refinedContent;
+        // 使用getDisplayPrompt确保内容被正确清理
+        initialContent = getDisplayPrompt(refinedContent);
       } else if (interactiveMode && optimizedPrompt) {
         // 处理直接从结果页面进入编辑模式的情况
-        // 检查optimizedPrompt是否包含<prompt_to_copy>标签
-        const optimizedMatch = optimizedPrompt.match(/<prompt_to_copy>([\s\S]*?)<\/prompt_to_copy>/);
-        initialContent = optimizedMatch ? optimizedMatch[1].trim() : optimizedPrompt;
+        // 使用getDisplayPrompt确保内容被正确清理
+        initialContent = getDisplayPrompt(optimizedPrompt);
       }
       
       setUserEditedPrompt(initialContent);
@@ -2507,19 +2540,53 @@ function App() {
   };
 
   // 渲染交互式会话UI
-  const renderInteractiveSessionUI = () => (
-    <div className={`interactive-session-ui ${isDesktop ? 'desktop-mode' : ''} desktop-layout`}>
-      <div className={`interactive-floating-toolbar ${isDesktop ? 'desktop-mode' : ''} desktop-layout`}>
-        <button 
-          className={`interactive-action-button primary-button ${isDesktop ? 'desktop-mode' : ''} desktop-layout`}
-          onClick={applyUserEditAndContinue}
-          disabled={isLoading}
-        >
-          继续优化
-        </button>
+  const renderInteractiveSessionUI = () => {
+    // 根据自我校正模式确定按钮文本和功能
+    const getButtonText = () => {
+      if (selfCorrection) {
+        // 自我校正模式：评估+优化
+        return `第${optimizationRound + 1}轮自我校正`;
+      } else {
+        // 非自我校正模式：只评估
+        return '评估提示词';
+      }
+    };
+
+    const getButtonTitle = () => {
+      if (selfCorrection) {
+        return `执行第${optimizationRound + 1}轮自我校正（评估+优化）`;
+      } else {
+        return '对当前提示词进行评估并查看详细报告';
+      }
+    };
+
+    return (
+      <div className={`interactive-session-ui ${isDesktop ? 'desktop-mode' : ''} desktop-layout`}>
+        <div className={`interactive-floating-toolbar ${isDesktop ? 'desktop-mode' : ''} desktop-layout`}>
+          <button 
+            className={`interactive-action-button primary-button ${isDesktop ? 'desktop-mode' : ''} desktop-layout`}
+            onClick={applyUserEditAndContinue}
+            disabled={isLoading}
+            title={getButtonTitle()}
+          >
+            {getButtonText()}
+          </button>
+          
+          {/* 在自我校正模式下，提供额外的"仅评估"选项 */}
+          {selfCorrection && (
+            <button 
+              className={`interactive-action-button secondary-button ${isDesktop ? 'desktop-mode' : ''} desktop-layout`}
+              onClick={handleEvaluateOnly}
+              disabled={isLoading}
+              title="仅评估当前提示词，不进行优化"
+            >
+              仅评估
+            </button>
+          )}
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   const renderTimeBasedGreeting = () => {
     const hour = new Date().getHours();
@@ -2700,19 +2767,13 @@ function App() {
         }
         
         if (promptContent) {
-          // 处理<prompt_to_copy>标签
-          const promptToCopyMatch = promptContent.match(/<prompt_to_copy>([\s\S]*?)<\/prompt_to_copy>/);
-          
           // 保存完整提示词
           setOptimizedPrompt(promptContent);
           
-          // 优先显示标签内容
-          if (promptToCopyMatch && promptToCopyMatch[1]) {
-            setUserEditedPrompt(promptToCopyMatch[1].trim());
-            console.log(`找到并提取<prompt_to_copy>标签内容，长度: ${promptToCopyMatch[1].trim().length}`);
-          } else {
-            setUserEditedPrompt(promptContent);
-          }
+          // 使用getDisplayPrompt提取干净内容用于编辑
+          const cleanedContent = getDisplayPrompt(promptContent);
+          setUserEditedPrompt(cleanedContent);
+          console.log(`成功设置清理后的内容，长度: ${cleanedContent.length}`);
           
           setSessionData(sessionData);
           return true;
@@ -2741,13 +2802,9 @@ function App() {
   // 在交互模式下，初始化userEditedPrompt
   useEffect(() => {
     if (interactiveMode && optimizedPrompt && showResultPage) {
-      // 提取<prompt_to_copy>标签内的内容
-      const promptToCopyMatch = optimizedPrompt.match(/<prompt_to_copy>([\s\S]*?)<\/prompt_to_copy>/);
-      if (promptToCopyMatch && promptToCopyMatch[1]) {
-        setUserEditedPrompt(promptToCopyMatch[1].trim());
-      } else {
-        setUserEditedPrompt(optimizedPrompt);
-      }
+      // 使用getDisplayPrompt提取干净的内容
+      const cleanedContent = getDisplayPrompt(optimizedPrompt);
+      setUserEditedPrompt(cleanedContent);
     }
   }, [interactiveMode, optimizedPrompt, showResultPage]);
 
@@ -2882,15 +2939,69 @@ function App() {
   // 检查是否可以查看评估
   const canViewEvaluation = (): boolean => {
     if (interactiveMode) {
-      // 交互模式：检查sessionData中是否有评估报告
-      return !!(sessionData?.evaluation_report) && 
-             (sessionStage === 'evaluation_complete' || sessionStage === 'refinement_complete');
+      // 交互模式：只要有sessionId就可以查看评估，不限制阶段
+      return !!(sessionId && sessionData);
     } else {
       // 高级模式：检查processedSteps
       return advancedMode && processedSteps.length > 0;
     }
   };
   
+  // 仅评估函数（不优化）
+  const handleEvaluateOnly = async () => {
+    if (!sessionId) {
+      console.error("没有活跃的会话ID");
+      return;
+    }
+    
+    // 防止重复点击
+    if (isLoading) {
+      console.log("操作正在进行中，忽略重复点击");
+      return;
+    }
+    
+    const updatedContent = userEditedPrompt.trim();
+    
+    console.log("=== 开始仅评估模式 ===");
+    console.log("会话ID:", sessionId);
+    console.log("用户编辑内容长度:", updatedContent.length);
+    
+    setIsLoading(true);
+    setError(null);
+    
+    try {
+      // 应用用户编辑
+      console.log("步骤1: 应用用户编辑");
+      const updatedSession = await updatePromptByUser(sessionId, updatedContent);
+      if (!updatedSession) {
+        console.error("updatePromptByUser失败");
+        return;
+      }
+      
+      // 退出编辑模式
+      setEditMode(false);
+      
+      // 执行评估
+      console.log("步骤2: 执行评估");
+      const evalResult = await evaluatePrompt(sessionId);
+      if (!evalResult) {
+        console.error("评估失败");
+        return;
+      }
+      
+      // 跳转到评估页面
+      console.log("跳转到评估页面");
+      setShowStepsView(true);
+      
+      console.log("=== 仅评估模式完成 ===");
+    } catch (err) {
+      console.error("仅评估过程中发生错误:", err);
+      setError("评估时发生错误: " + (err instanceof Error ? err.message : '未知错误'));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
     <div className={`app ${themeStyle}`}>
       {/* 页面头部 */}
@@ -3089,6 +3200,7 @@ function App() {
                   <div><strong>调试信息:</strong></div>
                   <div>会话ID: {sessionId || 'None'}</div>
                   <div>会话阶段: {sessionStage || 'None'}</div>
+                  <div>当前优化轮次: 第{optimizationRound}轮</div>
                   <div>optimizedPrompt长度: {optimizedPrompt?.length || 0}</div>
                   <div>userEditedPrompt长度: {userEditedPrompt?.length || 0}</div>
                   <div>editMode: {editMode ? 'true' : 'false'}</div>
