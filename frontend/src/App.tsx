@@ -1863,8 +1863,13 @@ function App() {
       
       // 更新会话状态和评估报告
       setSessionStage(sessionData.current_stage);
-      if (sessionData.evaluation_report) {
-        setSessionData(sessionData);
+      setSessionData(sessionData);
+      
+      // 确保当前提示词内容正确显示
+      if (sessionData.p1_prompt) {
+        setOptimizedPrompt(sessionData.p1_prompt);
+        const cleanedContent = getDisplayPrompt(sessionData.p1_prompt);
+        setUserEditedPrompt(cleanedContent);
       }
       
       return sessionData;
@@ -1880,6 +1885,14 @@ function App() {
   // 优化提示词
   const refinePrompt = async (id: string) => {
     setIsLoading(true);
+    console.log("=== REFINE PROMPT 开始 ===");
+    console.log("会话ID:", id);
+    console.log("当前 optimizedPrompt:", optimizedPrompt?.substring(0, 100) + "...");
+    console.log("当前 userEditedPrompt:", userEditedPrompt?.substring(0, 100) + "...");
+    
+    // 声明变量用于跟踪新提示词内容
+    let newPromptContent = '';
+    let foundInField = '';
     
     try {
       const response = await fetch(`/api/sessions/${id}/refine`, {
@@ -1887,26 +1900,84 @@ function App() {
         headers: { 'Content-Type': 'application/json' }
       });
       
+      console.log("refinePrompt API响应状态:", response.status);
+      
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({ detail: `HTTP错误: ${response.status}` }));
         throw new Error(errorData.detail || `请求失败: ${response.status}`);
       }
       
-      const sessionData = await response.json() as SessionResponse;
+      const responseData = await response.json();
+      console.log("=== API 返回完整数据 ===");
+      console.log(JSON.stringify(responseData, null, 2));
+      console.log("=== 数据字段检查 ===");
+      console.log("responseData.prompt 存在:", !!responseData.prompt);
+      console.log("responseData.prompt 长度:", responseData.prompt?.length || 0);
+      console.log("responseData.prompt 预览:", responseData.prompt?.substring(0, 200) + "...");
       
-      // 更新会话状态和优化后的提示词
-      setSessionStage(sessionData.current_stage);
-      if (sessionData.refined_prompt) {
-        setUserEditedPrompt(sessionData.refined_prompt); // 初始化用户编辑区
+      // 更新会话状态
+      setSessionStage(responseData.stage);
+      console.log("会话阶段已更新为:", responseData.stage);
+      
+      // 查找新的提示词内容，按优先级顺序
+      // 注意：PromptGenerationResponse使用prompt字段，不是refined_prompt
+      if (responseData.prompt && responseData.prompt.length > 20) {
+        newPromptContent = responseData.prompt;
+        foundInField = 'prompt';
+      } else if (responseData.message && typeof responseData.message === 'string' && responseData.message.length > 50) {
+        newPromptContent = responseData.message;
+        foundInField = 'message';
       }
       
-      return sessionData;
+      console.log(`=== 提示词内容检查 ===`);
+      console.log(`找到新提示词内容在字段: ${foundInField}`);
+      console.log(`新提示词长度: ${newPromptContent.length}`);
+      console.log(`新提示词前200字符:`, newPromptContent.substring(0, 200));
+      
+      if (newPromptContent) {
+        console.log("=== 开始更新状态 ===");
+        
+        // 更新完整的优化后的提示词
+        console.log("步骤1: 更新 optimizedPrompt");
+        setOptimizedPrompt(newPromptContent);
+        
+        // 提取干净的内容用于编辑显示
+        const cleanedContent = getDisplayPrompt(newPromptContent);
+        console.log("步骤2: 清理后的内容长度:", cleanedContent.length);
+        console.log("步骤2: 清理后的内容预览:", cleanedContent.substring(0, 200));
+        
+        console.log("步骤3: 更新 userEditedPrompt");
+        setUserEditedPrompt(cleanedContent);
+        
+        console.log("=== 状态更新完成 ===");
+        
+        // 立即强制结束加载状态，确保UI更新
+        setIsLoading(false);
+        
+        // 添加一个小延迟后再次确认状态
+        setTimeout(() => {
+          console.log("=== 延迟检查状态 ===");
+          console.log("当前 optimizedPrompt 长度:", optimizedPrompt?.length);
+          console.log("当前 userEditedPrompt 长度:", userEditedPrompt?.length);
+        }, 200);
+        
+      } else {
+        console.warn("⚠️ 警告：API返回的数据中未找到有效的新提示词内容");
+        console.log("启动轮询机制...");
+        // 如果没有找到新内容，启动轮询机制
+        setTimeout(() => pollSessionForPrompt(id), 1000);
+      }
+      
+      console.log("=== REFINE PROMPT 结束 ===");
+      return responseData;
     } catch (err) {
+      console.error('❌ 优化提示词失败:', err);
       setError(err instanceof Error ? err.message : '优化提示词时发生未知错误');
-      console.error('优化提示词失败:', err);
       return null;
     } finally {
-      setIsLoading(false);
+      if (!newPromptContent) {
+        setIsLoading(false);
+      }
     }
   };
   
@@ -2027,43 +2098,60 @@ function App() {
   
   // 应用用户编辑并继续
   const applyUserEditAndContinue = async () => {
-    if (!sessionId) return;
-    
-    // 准备用户编辑的内容
-    let updatedContent = userEditedPrompt;
-    
-    // 检查原始提示词是否包含<prompt_to_copy>标签
-    const originalHasTag = optimizedPrompt.includes('<prompt_to_copy>');
-    
-    // 如果原始提示词有标签但用户编辑的内容没有，则将用户编辑的内容包装在标签中
-    if (originalHasTag && !updatedContent.includes('<prompt_to_copy>')) {
-      // 提取原始提示词中标签前后的内容（如果有）
-      const beforeTagMatch = optimizedPrompt.match(/([\s\S]*?)<prompt_to_copy>[\s\S]*?<\/prompt_to_copy>/);
-      const afterTagMatch = optimizedPrompt.match(/<prompt_to_copy>[\s\S]*?<\/prompt_to_copy>([\s\S]*)/);
-      
-      const beforeTag = beforeTagMatch && beforeTagMatch[1] ? beforeTagMatch[1] : '';
-      const afterTag = afterTagMatch && afterTagMatch[1] ? afterTagMatch[1] : '';
-      
-      // 重新构建包含原始前缀和后缀的内容
-      updatedContent = `${beforeTag}<prompt_to_copy>${updatedContent}</prompt_to_copy>${afterTag}`;
+    if (!sessionId) {
+      console.error("没有活跃的会话ID");
+      return;
     }
     
-    console.log("应用用户编辑，最终内容:", updatedContent);
+    // 直接使用用户编辑的内容，不进行标签包装
+    const updatedContent = userEditedPrompt.trim();
     
-    // 应用用户编辑
-    const updatedSession = await updatePromptByUser(sessionId, updatedContent);
-    if (!updatedSession) return;
+    console.log("=== 开始应用用户编辑并继续 ===");
+    console.log("会话ID:", sessionId);
+    console.log("当前阶段:", sessionStage);
+    console.log("用户编辑内容长度:", updatedContent.length);
+    console.log("用户编辑内容预览:", updatedContent.substring(0, 100) + "...");
     
-    // 根据当前阶段决定下一步操作
-    if (sessionStage === 'p1_generated') {
-      // P1已生成，用户修改后进行评估
-      await evaluatePrompt(sessionId);
-    } else if (sessionStage === 'evaluated') {
-      // 评估已完成，用户修改后进行优化
-      await refinePrompt(sessionId);
-    } else if (sessionStage === 'refined') {
-      // 优化已完成，用户修改后完成会话
-      await completeSession(sessionId);
+    try {
+      // 应用用户编辑
+      console.log("步骤1: 应用用户编辑");
+      const updatedSession = await updatePromptByUser(sessionId, updatedContent);
+      if (!updatedSession) {
+        console.error("updatePromptByUser失败");
+        return;
+      }
+      console.log("updatePromptByUser成功完成");
+      
+      // 退出编辑模式
+      setEditMode(false);
+      console.log("已退出编辑模式");
+      
+      // 根据当前阶段决定下一步操作
+      console.log("步骤2: 根据阶段决定下一步操作，当前阶段:", sessionStage);
+      
+      if (sessionStage === 'p1_generated') {
+        // P1已生成，用户修改后进行评估
+        console.log("执行评估提示词");
+        const evalResult = await evaluatePrompt(sessionId);
+        console.log("评估结果:", !!evalResult);
+      } else if (sessionStage === 'evaluation_complete') {
+        // 评估已完成，用户修改后进行优化
+        console.log("执行优化提示词");
+        const refineResult = await refinePrompt(sessionId);
+        console.log("优化结果:", !!refineResult);
+      } else if (sessionStage === 'refinement_complete') {
+        // 优化已完成，用户修改后完成会话
+        console.log("执行完成会话");
+        const completeResult = await completeSession(sessionId);
+        console.log("完成结果:", !!completeResult);
+      } else {
+        console.warn("未知的会话阶段:", sessionStage);
+      }
+      
+      console.log("=== 用户编辑应用流程完成 ===");
+    } catch (err) {
+      console.error("应用用户编辑过程中发生错误:", err);
+      setError("应用编辑时发生错误: " + (err instanceof Error ? err.message : '未知错误'));
     }
   };
   
@@ -2390,48 +2478,22 @@ function App() {
   const getDisplayPrompt = (prompt: string) => {
     if (!prompt) return '';
     
-    // 检查是否有 <prompt_to_copy> 标签
+    // 清理 <prompt_to_copy> 标签，只返回标签内的内容
     const promptToCopyMatch = prompt.match(/<prompt_to_copy>([\s\S]*?)<\/prompt_to_copy>/);
     if (promptToCopyMatch && promptToCopyMatch[1]) {
-      // 如果有标签，高亮显示这部分内容
-      return prompt.replace(
-        /<prompt_to_copy>([\s\S]*?)<\/prompt_to_copy>/g, 
-        '<span class="highlight-copy-section">$1</span>'
-      );
+      return promptToCopyMatch[1].trim();
     }
     
-    // 检查是否有 USER_COPY 标记
+    // 清理 USER_COPY 标记，只返回标记之间的内容
     const startMarker = "<<USER_COPY_PROMPT_START>>";
     const endMarker = "<<USER_COPY_PROMPT_END>>";
     
     if (prompt.includes(startMarker) && prompt.includes(endMarker)) {
-      const startIndex = prompt.indexOf(startMarker);
-      const endIndex = prompt.indexOf(endMarker) + endMarker.length;
+      const startIndex = prompt.indexOf(startMarker) + startMarker.length;
+      const endIndex = prompt.indexOf(endMarker);
       
-      // 如果标记位置有效，高亮显示标记之间的内容
-      if (startIndex > -1 && endIndex > startIndex) {
-        const before = prompt.substring(0, startIndex);
-        const marked = prompt.substring(startIndex, endIndex);
-        const after = prompt.substring(endIndex);
-        
-        const highlightedMarked = marked.replace(
-          startMarker, 
-          '<span class="copy-marker start-marker">' + startMarker + '</span>'
-        ).replace(
-          endMarker,
-          '<span class="copy-marker end-marker">' + endMarker + '</span>'
-        );
-        
-        const content = marked.substring(startMarker.length, marked.length - endMarker.length);
-        
-        return before + 
-          '<span class="copy-marker-wrapper">' + 
-          highlightedMarked.replace(
-            content,
-            '<span class="highlight-copy-section">' + content + '</span>'
-          ) + 
-          '</span>' + 
-          after;
+      if (startIndex > startMarker.length && endIndex > startIndex) {
+        return prompt.substring(startIndex, endIndex).trim();
       }
     }
     
@@ -2959,6 +3021,27 @@ function App() {
             
               <div className={`prompt-display-area`}> {/* Changed class and removed layout class */}
               <h3>优化后的提示词:</h3>
+              
+              {/* 临时调试信息 - 开发阶段使用 */}
+              {interactiveMode && (
+                <div style={{
+                  background: '#f0f0f0',
+                  border: '1px solid #ccc',
+                  padding: '10px',
+                  marginBottom: '10px',
+                  fontSize: '12px',
+                  fontFamily: 'monospace'
+                }}>
+                  <div><strong>调试信息:</strong></div>
+                  <div>会话ID: {sessionId || 'None'}</div>
+                  <div>会话阶段: {sessionStage || 'None'}</div>
+                  <div>optimizedPrompt长度: {optimizedPrompt?.length || 0}</div>
+                  <div>userEditedPrompt长度: {userEditedPrompt?.length || 0}</div>
+                  <div>editMode: {editMode ? 'true' : 'false'}</div>
+                  <div>isLoading: {isLoading ? 'true' : 'false'}</div>
+                </div>
+              )}
+              
                 {interactiveMode ? (
                   <textarea
                     className={`editable-prompt-textarea final-prompt-display ${interactiveMode ? 'interactive-mode' : ''}`}
@@ -2968,13 +3051,7 @@ function App() {
                   />
                 ) : (
                   <pre className={`final-prompt-display ${interactiveMode ? 'interactive-mode' : ''}`}>
-                    {(() => {
-                      const promptToCopyMatch = optimizedPrompt.match(/<prompt_to_copy>([\s\S]*?)<\/prompt_to_copy>/);
-                      if (promptToCopyMatch && promptToCopyMatch[1]) {
-                        return promptToCopyMatch[1].trim();
-                      }
-                      return optimizedPrompt;
-                    })()}
+                    {getDisplayPrompt(optimizedPrompt)}
                   </pre>
                 )}
               
